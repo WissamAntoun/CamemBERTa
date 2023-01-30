@@ -127,6 +127,6 @@ Paper under review, will update this section when the paper is published.
 
 Wissam Antoun: `wissam (dot) antoun (at) inria (dot) fr`
 
-Benoit Sagot: `benoit (dot) aagot (at) inria (dot) fr`
+Benoit Sagot: `benoit (dot) sagot (at) inria (dot) fr`
 
 Djame Seddah: `djame (dot) seddah (at) inria (dot) fr`
