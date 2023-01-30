@@ -4,7 +4,7 @@ The repos contains the code for training CamemBERTa, a French language model bas
 This the first publicly available implementation of DeBERTa V3, and the first publicly DeBERTaV3 model outside of the original [Microsoft release](https://github.com/microsoft/DeBERTa) .
 
 
-## Pretrained Setup
+## Pretraining Setup
 
 The model was trained on the French subset of the CCNet corpus (the same subset used in CamemBERT and PaGNOL) and is available on the HuggingFace model hub: LINK_SOON
 To speed up the pre-training experiments, I split the pre-training into two phases;
@@ -44,16 +44,25 @@ I hope that the code in the `TFDebertaV3Embeddings` class is clear enough to und
 - Export to PyTorch
 - Relatively easy extension to other models
 
+## Data Preparation
 
-## Using this repo
+The data prep code is a verbatim copy from NVIDA ELECTRA TF2.
 
 Following NVidia, I recommend using Docker/Singularity for setting up the environment and training.
+
+## Pretraining
 
 I used Singularity for training on a HPC cluster running OAR (not SLURM), but it should go something like this if you are doing local pretraining. Check the `configuration_deberta_v2.py` file and the `configs` folder for the configuration options.
 
 ```bash
 python run_pretraining --config_file=configs/p1_local_1gpu.json
 ```
+
+## Finetuning
+
+I suggest post_processing the model using `postprocess_pretrained_ckpt.py` and `convert_to_pt.py` script, and then using PyTorch and HuggingFace's `transformers` library to finetune the model.
+
+Note: After conversion check if the model `config.json` and the tokenizer configs are correct.
 
 ## Notes:
 
@@ -75,15 +84,9 @@ Treat this as research code, you might find some small bugs, so be patient.
 
 - Training DeBERTa V2 is ~30% slower than RoBERTa or BERT models even with XLA and FP16.
 
-## Finetuning
 
-I suggest post_processing the model using `postprocess_pretrained_ckpt.py` and `convert_to_pt.py` script, and then using PyTorch and HuggingFace's `transformers` library to finetune the model.
 
-Note: After conversion check if the model `config.json` and the tokenizer configs are correct.
 
-## Data Preparation
-
-The data prep code is a verbatim copy from NVIDA ELECTRA TF2.
 
 ## License
 
