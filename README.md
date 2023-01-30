@@ -3,6 +3,12 @@
 The repos contains the code for training CamemBERTa, a French language model based on DeBERTa V3, a DeBerta V2 with ELECTRA style pretraining, with gradient-disentangled embedding sharing (GDES) added between the generator and discriminator.
 This the first publicly available implementation of DeBERTa V3, and the first publicly DeBERTaV3 model outside of the original [Microsoft release](https://github.com/microsoft/DeBERTa) .
 
+## Gradient-Disentangled Embedding Sharing (GDES)
+
+To disentagle the gradients of the shared embedding between the generator and discriminator, the authors make use of an another embedding layer that is not shared between the generator and discriminator. This layers is initialized to zero and added to a copy of the generator embedding matrix with diabled gradients, and should encode the difference between the generator embedding and the discriminator embedding, in order to stop the tug-of-war between the two models in the ELECTRA objective.
+When training ends, the final embedding matrix of the discriminator is the sum of the generator embedding matrix and the disentangled embedding matrix.
+
+I hope that the code in the `TFDebertaV3Embeddings` class is clear enough to understand what is going on.
 
 ## Pretraining Setup
 
@@ -27,12 +33,7 @@ Datasets: POS tagging and Dependency Parsing (GSD, Rhapsodie, Sequoia, FSMB), NE
 | CamemBERT (30%)              | 97.53    | 87.98     | **91.04** | 93.28     | 88.94     | 79.89     | 75.14     | 56.19     |
 | CamemBERTa                   | 97.57    | 88.55     | 90.33     | **94.92** | **91.67** | **82.00** | **81.15** | 62.01     |
 
-## Gradient-Disentangled Embedding Sharing (GDES)
 
-To disentagle the gradients of the shared embedding between the generator and discriminator, the authors make use of an another embedding layer that is not shared between the generator and discriminator. This layers is initialized to zero and added to a copy of the generator embedding matrix with diabled gradients, and should encode the difference between the generator embedding and the discriminator embedding, in order to stop the tug-of-war between the two models in the ELECTRA objective.
-When training ends, the final embedding matrix of the discriminator is the sum of the generator embedding matrix and the disentangled embedding matrix.
-
-I hope that the code in the `TFDebertaV3Embeddings` class is clear enough to understand what is going on.
 
 ## Features:
 
