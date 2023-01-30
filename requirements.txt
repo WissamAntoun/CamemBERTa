@@ -1,0 +1,5 @@
+# tokenizers==0.7.0
+git+https://github.com/huggingface/transformers.git@0c55d47cded0c711a4359afb04d73ffb86b7d913
+# transformers==4.17.0
+sentencepiece==0.1.96
+tensorflow-addons

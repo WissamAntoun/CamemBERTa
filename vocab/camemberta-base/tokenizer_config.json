@@ -1,0 +1,1 @@
+{"do_lower_case": false, "bos_token": "[CLS]", "eos_token": "[SEP]", "unk_token": "[UNK]", "sep_token": "[SEP]", "pad_token": "[PAD]", "cls_token": "[CLS]", "mask_token": "[MASK]", "split_by_punct": false, "special_tokens_map_file": null, "name_or_path": "vocab/camembert-deberta/", "sp_model_kwargs": {}, "tokenizer_file": null, "tokenizer_class": "DebertaV2Tokenizer"}

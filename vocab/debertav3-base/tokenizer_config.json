@@ -1,0 +1,13 @@
+{
+    "do_lower_case": true,
+    "bos_token": "[CLS]",
+    "eos_token": "[SEP]",
+    "unk_token": "[UNK]",
+    "sep_token": "[SEP]",
+    "pad_token": "[PAD]",
+    "cls_token": "[CLS]",
+    "mask_token": "[MASK]",
+    "split_by_punct": false,
+    "sp_model_kwargs": {},
+    "tokenizer_class": "DebertaV2Tokenizer"
+}

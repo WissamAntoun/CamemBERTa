@@ -1,0 +1,5 @@
+ELECTRA and DeBERTaV3 Tensorflow 2
+
+This repository includes software from https://github.com/huggingface/transformers and from https://github.com/NVIDIA/DeepLearningExamples/blob/master/TensorFlow2/LanguageModeling/ELECTRA/
+licensed under the Apache License 2.0.
+
