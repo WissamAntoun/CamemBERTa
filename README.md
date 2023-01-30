@@ -13,6 +13,7 @@ I hope that the code in the `TFDebertaV3Embeddings` class is clear enough to und
 ## Pretraining Setup
 
 The model was trained on the French subset of the CCNet corpus (the same subset used in CamemBERT and PaGNOL) and is available on the HuggingFace model hub: LINK_SOON
+
 To speed up the pre-training experiments, I split the pre-training into two phases;
 in phase 1, the model is trained with a maximum sequence length of 128 tokens for 10,000 steps with 2,000 warm-up steps and a very large batch size of 67,584.
 In phase 2, maximum sequence length is increased to the full model capacity of 512 tokens for 3,300 steps with 200 warm-up steps and a batch size of 27,648.
