@@ -29,7 +29,7 @@ from modeling_tf_deberta_v2 import PretrainingModel as DebertaPretrainingModel
 from modeling_tf_roberta import PretrainingModel as RobertaPretrainingModel
 from utils import heading, log, log_config, print_model_layers
 
-# doesn't work because of nvidia logger :) so i just copy the tokenizer XD
+# doesn't work because nvidia logger causes segfault :) so i just copy the tokenizer XD
 # from fast_tokenizer.tokenization_deberta_v2_fast import DebertaV2TokenizerFast
 
 
