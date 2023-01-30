@@ -78,11 +78,13 @@ We also include the TF2 weights including the weights for the model's RTD head f
 
 The data prep code is a verbatim copy from NVIDA ELECTRA TF2.
 
-Following NVidia, I recommend using Docker/Singularity for setting up the environment and training.
+Following NVidia, we recommend using Docker/Singularity for setting up the environment and training.
 
 ## Pretraining
 
-I used Singularity for training on a HPC cluster running OAR (not SLURM), but it should go something like this if you are doing local pretraining. Check the `configuration_deberta_v2.py` file and the `configs` folder for the configuration options.
+We used Singularity for training on a HPC cluster running OAR (not SLURM), but it should go something like this if you are doing local pretraining. Check the `configuration_deberta_v2.py` file and the `configs` folder for the configuration options.
+
+SLURM users need to add `tf.distribute.cluster_resolver.SlurmClusterResolver` to the `official_utils.misc.distribution_utils.get_distribution_strategy()` function. You can also check the [NVidia BERT TF2](https://github.com/NVIDIA/DeepLearningExamples/blob/master/TensorFlow2/LanguageModeling/BERT) repository for more advanced ways to run the pretraining.
 
 ```bash
 python run_pretraining --config_file=configs/p1_local_1gpu.json
@@ -108,9 +110,7 @@ Treat this as research code, you might find some small bugs, so be patient.
 
 - Training with TPU runs but is super slow, check this issue for more info https://github.com/huggingface/transformers/issues/18239. (Also you will have to manually disable some logging lines since they cause some issues with the TPU).
 
-- You can also check the [NVidia BERT TF2](https://github.com/NVIDIA/DeepLearningExamples/blob/master/TensorFlow2/LanguageModeling/BERT) repository for more advanced ways to run the pretraining.
-
-- The repo also support training with MLM or ELECTRA, with DebertaV2 and RoBERTa. The pretraining code could be improved to support other models, by doing some abstractions to make it easier to add support for other models, but I didn't do that yet
+- The repo also support training with MLM or ELECTRA, with DebertaV2 and RoBERTa. The pretraining code could be improved to support other models, by doing some abstractions to make it easier to add support for other models.
 
 - Training (finetuning) DeBERTa V2 is ~30% slower than RoBERTa or BERT models even with XLA and FP16.
 
