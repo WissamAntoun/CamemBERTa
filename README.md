@@ -1,11 +1,14 @@
 # CamemBERTa: A French language model based on DeBERTa V3
 
-The repos contains the code for training CamemBERTa, a French language model based on DeBERTa V3, a DeBerta V2 with ELECTRA style pretraining, with gradient-disentangled embedding sharing (GDES) added between the generator and discriminator.
+The repos contains the code for training CamemBERTa, a French language model based on DeBERTa V3, a DeBerta V2 with ELECTRA style pretraining using the Replaced Token Detection (RTD) objective.
+RTD uses a generator model, trained using the MLM objective, to replace masked tokens with plausible candidates, and a discriminator model trained to detect which tokens were replaced by the generator.
+Usually the generator and discriminator share the same embedding matrix, but the authors of DeBERTa V3 propose a new technique to disentagle the gradients of the shared embedding between the generator and discriminator called gradient-disentangled embedding sharing (GDES)
 This the first publicly available implementation of DeBERTa V3, and the first publicly DeBERTaV3 model outside of the original [Microsoft release](https://github.com/microsoft/DeBERTa) .
 
 ## Gradient-Disentangled Embedding Sharing (GDES)
 
-To disentagle the gradients of the shared embedding between the generator and discriminator, the authors make use of an another embedding layer that is not shared between the generator and discriminator. This layers is initialized to zero and added to a copy of the generator embedding matrix with diabled gradients, and should encode the difference between the generator embedding and the discriminator embedding, in order to stop the tug-of-war between the two models in the ELECTRA objective.
+To disentagle the gradients of the shared embedding between the generator and discriminator, the authors of DeBERTaV3 make use of an another embedding layer that is not shared between the generator and discriminator.
+This layers is initialized to zero and added to a copy of the generator embedding matrix with diabled gradients, and should encode the difference between the generator embedding and the discriminator embedding, in order to stop the tug-of-war between the two models in the ELECTRA objective.
 When training ends, the final embedding matrix of the discriminator is the sum of the generator embedding matrix and the disentangled embedding matrix.
 
 The code for GDES is added in the [`TFDebertaV3Embeddings`](https://gitlab.inria.fr/almanach/CamemBERTa/-/blob/main/modeling_tf_deberta_v2.py#L1143) class, with the stop gradient operation added [here](https://gitlab.inria.fr/almanach/CamemBERTa/-/blob/main/modeling_tf_deberta_v2.py#L1183).
@@ -27,7 +30,7 @@ check the huggingface repo for the tensorboard logs and plots
 
 ## Fine-tuning results
 
-Datasets: POS tagging and Dependency Parsing (GSD, Rhapsodie, Sequoia, FSMB), NER (FTB), the FLUE benchmark (XNLI, PAWS-X), and the French Question Answering Dataset (FQuAD)
+Datasets: POS tagging and Dependency Parsing (GSD, Rhapsodie, Sequoia, FSMB), NER (FTB), the FLUE benchmark (XNLI, CLS, PAWS-X), and the French Question Answering Dataset (FQuAD)
 
 | Model             | UPOS      | LAS       | NER       | CLS       | PAWS-X    | XNLI      | F1 (FQuAD) | EM (FQuAD) |
 |-------------------|-----------|-----------|-----------|-----------|-----------|-----------|------------|------------|
@@ -47,7 +50,7 @@ The following table compares CamemBERTa's performance on XNLI against other mode
 
 *Note: The CamemBERTa training steps was adjusted for a batch size of 8192.*
 
-## How to fine-tune CamemBERTa
+## How to use CamemBERTa
 
 Our pretrained weights are available on the HuggingFace model hub, you can load them using the following code:
 
@@ -63,6 +66,7 @@ tokenizer_gen = AutoTokenizer.from_pretrained("almanach/camemberta-base-ccnet-ge
 
 We also include the TF2 weights including the weights for the model's RTD head for the discriminator, and the MLM head for the generator.
 
+CamemBERTa is compatible with most finetuning scripts from the `transformers` library.
 
 ## Features:
 
