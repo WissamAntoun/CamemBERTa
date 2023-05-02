@@ -5,6 +5,8 @@ RTD uses a generator model, trained using the MLM objective, to replace masked t
 Usually the generator and discriminator share the same embedding matrix, but the authors of DeBERTa V3 propose a new technique to disentagle the gradients of the shared embedding between the generator and discriminator called gradient-disentangled embedding sharing (GDES)
 This the first publicly available implementation of DeBERTa V3, and the first publicly DeBERTaV3 model outside of the original [Microsoft release](https://github.com/microsoft/DeBERTa) .
 
+Preprint Paper: https://inria.hal.science/hal-03963729/ 
+
 ## Gradient-Disentangled Embedding Sharing (GDES)
 
 To disentagle the gradients of the shared embedding between the generator and discriminator, the authors of DeBERTaV3 make use of an another embedding layer that is not shared between the generator and discriminator.
@@ -125,7 +127,23 @@ This code is licensed under the Apache License 2.0. The public model weights are
 
 ## Citation
 
-Paper under review, will update this section when the paper is published.
+Paper accept to Findings of ACL 2023.
+
+You can use the preprint citation for now
+
+```
+@article{antoun2023camemberta
+  TITLE = {{Data-Efficient French Language Modeling with CamemBERTa}},
+  AUTHOR = {Antoun, Wissam and Sagot, Beno{\^i}t and Seddah, Djam{\'e}},
+  URL = {https://inria.hal.science/hal-03963729},
+  NOTE = {working paper or preprint},
+  YEAR = {2023},
+  MONTH = Jan,
+  PDF = {https://inria.hal.science/hal-03963729/file/French_DeBERTa___ACL_2023%20to%20be%20uploaded.pdf},
+  HAL_ID = {hal-03963729},
+  HAL_VERSION = {v1},
+}
+```
 
 ## Contact
 
