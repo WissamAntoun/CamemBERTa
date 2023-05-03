@@ -5,7 +5,7 @@ RTD uses a generator model, trained using the MLM objective, to replace masked t
 Usually the generator and discriminator share the same embedding matrix, but the authors of DeBERTa V3 propose a new technique to disentagle the gradients of the shared embedding between the generator and discriminator called gradient-disentangled embedding sharing (GDES)
 This the first publicly available implementation of DeBERTa V3, and the first publicly DeBERTaV3 model outside of the original [Microsoft release](https://github.com/microsoft/DeBERTa) .
 
-Preprint Paper: https://inria.hal.science/hal-03963729/ 
+Preprint Paper: https://inria.hal.science/hal-03963729/
 
 ## Gradient-Disentangled Embedding Sharing (GDES)
 
@@ -59,11 +59,11 @@ Our pretrained weights are available on the HuggingFace model hub, you can load 
 ```python
 from transformers import AutoTokenizer, AutoModel, AutoModelForMaskedLM
 
-camemberta = AutoModel.from_pretrained("almanach/camemberta-base-ccnet")
-tokenizer = AutoTokenizer.from_pretrained("almanach/camemberta-base-ccnet")
+camemberta = AutoModel.from_pretrained("almanach/camemberta-base")
+tokenizer = AutoTokenizer.from_pretrained("almanach/camemberta-base")
 
-camemberta_gen = AutoModelForMaskedLM.from_pretrained("almanach/camemberta-base-ccnet-generator")
-tokenizer_gen = AutoTokenizer.from_pretrained("almanach/camemberta-base-ccnet-generator")
+camemberta_gen = AutoModelForMaskedLM.from_pretrained("almanach/camemberta-base-generator")
+tokenizer_gen = AutoTokenizer.from_pretrained("almanach/camemberta-base-generator")
 ```
 
 We also include the TF2 weights including the weights for the model's RTD head for the discriminator, and the MLM head for the generator.
@@ -127,7 +127,7 @@ This code is licensed under the Apache License 2.0. The public model weights are
 
 ## Citation
 
-Paper accept to Findings of ACL 2023.
+Paper accepted to Findings of ACL 2023.
 
 You can use the preprint citation for now
 
