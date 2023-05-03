@@ -7,6 +7,10 @@ This the first publicly available implementation of DeBERTa V3, and the first pu
 
 Preprint Paper: https://inria.hal.science/hal-03963729/
 
+Models:
+- https://huggingface.co/almanach/camemberta-base
+- https://huggingface.co/almanach/camemberta-base-generator
+
 ## Gradient-Disentangled Embedding Sharing (GDES)
 
 To disentagle the gradients of the shared embedding between the generator and discriminator, the authors of DeBERTaV3 make use of an another embedding layer that is not shared between the generator and discriminator.
