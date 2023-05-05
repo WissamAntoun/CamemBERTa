@@ -8,8 +8,8 @@ This the first publicly available implementation of DeBERTa V3, and the first pu
 Preprint Paper: https://inria.hal.science/hal-03963729/
 
 Models:
-- https://huggingface.co/almanach/camemberta-base
-- https://huggingface.co/almanach/camemberta-base-generator
+- [CamemBERTa](https://huggingface.co/almanach/camemberta-base)
+- [CamemBERTa Generator](https://huggingface.co/almanach/camemberta-base-generator)
 
 ## Gradient-Disentangled Embedding Sharing (GDES)
 
@@ -22,7 +22,7 @@ The embedding sharing is added in the [`PretrainingModel`](https://gitlab.inria.
 
 ## Pretraining Setup
 
-The model was trained on the French subset of the CCNet corpus (the same subset used in CamemBERT and PaGNOL) and is available on the HuggingFace model hub: [CamemBERTa](https://huggingface.co/almanach/camemberta-base-ccnet) and [CamemBERTa Generator](https://huggingface.co/almanach/camemberta-base-ccnet-generator).
+The model was trained on the French subset of the CCNet corpus (the same subset used in CamemBERT and PaGNOL) and is available on the HuggingFace model hub: [CamemBERTa](https://huggingface.co/almanach/camemberta-base) and [CamemBERTa Generator](https://huggingface.co/almanach/camemberta-base-generator).
 
 To speed up the pre-training experiments, the pre-training was split into two phases;
 in phase 1, the model is trained with a maximum sequence length of 128 tokens for 10,000 steps with 2,000 warm-up steps and a very large batch size of 67,584.
