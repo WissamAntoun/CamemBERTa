@@ -76,6 +76,7 @@ TF_DEBERTA_V2_PRETRAINED_MODEL_ARCHIVE_LIST = [
 
 tnp.experimental_enable_numpy_behavior()
 
+
 # Copied from transformers.models.deberta.modeling_tf_deberta.TFDebertaContextPooler with Deberta->DebertaV2
 class TFDebertaV2ContextPooler(tf.keras.layers.Layer):
     def __init__(self, config: DebertaV2Config, **kwargs):
@@ -118,7 +119,6 @@ class TFDebertaV2XSoftmax(tf.keras.layers.Layer):
         self.axis = axis
 
     def call(self, inputs: tf.Tensor, mask: tf.Tensor):
-
         rmask = tf.logical_not(tf.cast(mask, tf.bool))
         output = tf.where(rmask, tf.constant(float("-inf"), inputs.dtype), inputs)
         output = tf.nn.softmax(output, self.axis)
@@ -523,7 +523,6 @@ class TFDebertaV2Encoder(tf.keras.layers.Layer):
         rel_embeddings = self.get_rel_embedding()
         output_states = next_kv
         for i, layer_module in enumerate(self.layer):
-
             if output_hidden_states:
                 all_hidden_states = all_hidden_states + (output_states,)
 
@@ -915,7 +914,6 @@ class TFDebertaV2DisentangledSelfAttention(tf.keras.layers.Layer):
     def disentangled_att_bias(
         self, query_layer, key_layer, relative_pos, rel_embeddings, scale_factor
     ):
-
         if relative_pos is None:
             q = shape_list(query_layer)[-2]
             relative_pos = build_relative_position(
@@ -1061,6 +1059,7 @@ class TFDebertaV3Embeddings(tf.keras.layers.Layer):
             self.embed_proj = tf.keras.layers.Dense(
                 config.hidden_size,
                 kernel_initializer=get_initializer(config.initializer_range),
+                name="embed_proj",
                 use_bias=False,
             )
             log("Creating projection layer")
@@ -1404,7 +1403,6 @@ class TFDebertaV2MainLayer(tf.keras.layers.Layer):
         training: bool = False,
         **kwargs,
     ) -> Union[TFBaseModelOutput, Tuple[tf.Tensor]]:
-
         if input_ids is not None and inputs_embeds is not None:
             raise ValueError(
                 "You cannot specify both input_ids and inputs_embeds at the same time"
@@ -2182,7 +2180,6 @@ class TFDebertaV3ForRTD(TFDebertaV2PreTrainedModel):
         training: Optional[bool] = False,
         **kwargs,
     ) -> Union[TFDebertaV3ForRTDOutput, Tuple[tf.Tensor]]:
-
         outputs = self.debertav2(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -2271,7 +2268,6 @@ class PretrainingModel(tf.keras.Model):
         # self.disc_config.update({"output_hidden_states": True})
 
         if config.electra_objective:
-
             # Set up generator
             gen_config = get_generator_config(config, self.disc_config)
             gen_config.update({"amp": config.amp})
