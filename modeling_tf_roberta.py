@@ -15,8 +15,7 @@
 # limitations under the License.
 """ TF 2.0 RoBERTa model with Roberta GDES pretraining capabilities."""
 
-# Modified by Wissam Antoun - Almanach - Inria Paris 2022/2023
-
+# Modified by Wissam Antoun - Almanach - Inria Paris 2024
 
 import collections
 import math
@@ -25,19 +24,8 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Union
 
 import numpy as np
-import tensorflow as tf
-from transformers.file_utils import (
-    DUMMY_INPUTS,
-    MULTIPLE_CHOICE_DUMMY_INPUTS,
-    ModelOutput,
-    add_code_sample_docstrings,
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-)
-from transformers.utils import logging
-
 import pretrain_utils
+import tensorflow as tf
 from activations_tf import get_tf_activation
 from configuration_roberta import RobertaConfig, RobertaPretrainingConfig
 from modeling_tf_outputs import (
@@ -64,6 +52,16 @@ from modeling_tf_utils import (
     unpack_inputs,
 )
 from tf_utils import shape_list, stable_softmax
+from transformers.file_utils import (
+    DUMMY_INPUTS,
+    MULTIPLE_CHOICE_DUMMY_INPUTS,
+    ModelOutput,
+    add_code_sample_docstrings,
+    add_start_docstrings,
+    add_start_docstrings_to_model_forward,
+    replace_return_docstrings,
+)
+from transformers.utils import logging
 from utils import heading, log, log_config
 
 logger = logging.get_logger(__name__)
@@ -96,7 +94,7 @@ class TFRobertaEmbeddings(tf.keras.layers.Layer):
     ):
         super().__init__(**kwargs)
 
-        self.padding_idx = 1
+        self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
         self.type_vocab_size = config.type_vocab_size
         self.embedding_size = config.embedding_size
@@ -116,7 +114,9 @@ class TFRobertaEmbeddings(tf.keras.layers.Layer):
         self.LayerNorm = tf.keras.layers.LayerNormalization(
             epsilon=config.layer_norm_eps, name="LayerNorm"
         )
+        # convert the config.hidden_dropout_prob to bfloat16
         self.dropout = tf.keras.layers.Dropout(rate=config.hidden_dropout_prob)
+
         self.disentangled_gradients = disentangled_gradients
         self.amp = config.amp
 
@@ -278,7 +278,6 @@ class TFRobertaEmbeddings(tf.keras.layers.Layer):
 
         final_embeddings = self.LayerNorm(final_embeddings)
 
-        final_embeddings = self.LayerNorm(inputs=final_embeddings)
         final_embeddings = self.dropout(inputs=final_embeddings, training=training)
 
         return final_embeddings
@@ -1280,7 +1279,10 @@ class TFRobertaLMHead(tf.keras.layers.Layer):
         self.layer_norm = tf.keras.layers.LayerNormalization(
             epsilon=config.layer_norm_eps, name="layer_norm"
         )
-        self.act = get_tf_activation("gelu")
+        if config.bf16:
+            self.act = get_tf_activation("gelu_bf16")
+        else:
+            self.act = get_tf_activation("gelu")
 
         # The output weights are the same as the input embeddings, but there is
         # an output-only bias for each token.
@@ -2233,6 +2235,21 @@ class TFRobertaForRTD(TFRobertaPreTrainedModel):
         training: Optional[bool] = False,
         **kwargs,
     ) -> Union[TFRobertaForRTDOutput, Tuple[tf.Tensor]]:
+        r"""
+        Returns:
+
+        Examples:
+
+        ```python
+        >>> import tensorflow as tf
+        >>> from transformers import ElectraTokenizer, TFElectraForPreTraining
+
+        >>> tokenizer = ElectraTokenizer.from_pretrained("google/electra-small-discriminator")
+        >>> model = TFElectraForPreTraining.from_pretrained("google/electra-small-discriminator")
+        >>> input_ids = tf.constant(tokenizer.encode("Hello, my dog is cute"))[None, :]  # Batch size 1
+        >>> outputs = model(input_ids)
+        >>> scores = outputs[0]
+        ```"""
         outputs = self.roberta(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -2316,6 +2333,7 @@ class PretrainingModel(tf.keras.Model):
             position_biased_input=config.position_biased_input,
         )
         self.disc_config.update({"amp": config.amp})
+        self.disc_config.update({"bf16": config.bf16})
         # self.disc_config.update({"output_hidden_states": True})
 
         if config.electra_objective:
@@ -2323,6 +2341,7 @@ class PretrainingModel(tf.keras.Model):
             # Set up generator
             gen_config = get_generator_config(config, self.disc_config)
             gen_config.update({"amp": config.amp})
+            gen_config.update({"bf16": config.bf16})
             heading("Generator Config")
             log_config(gen_config)
             self.generator = TFRobertaForMaskedLM(gen_config)
@@ -2358,12 +2377,12 @@ class PretrainingModel(tf.keras.Model):
             mlm_output = self._get_masked_lm_output(
                 masked_inputs, self.generator, is_training=is_training
             )
-        fake_data = self._get_fake_data(masked_inputs, mlm_output.logits)
         total_loss = config.gen_weight * mlm_output.loss
 
         # Discriminator
         disc_output = None
         if config.electra_objective:
+            fake_data = self._get_fake_data(masked_inputs, mlm_output.logits)
             disc_output = self._get_discriminator_output(
                 fake_data.inputs,
                 self.discriminator,

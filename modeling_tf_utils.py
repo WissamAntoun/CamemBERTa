@@ -17,6 +17,7 @@
 
 import functools
 import inspect
+import logging
 import os
 import pickle
 import re
@@ -26,16 +27,17 @@ from typing import Dict, List, Optional, Union
 import h5py
 import numpy as np
 import tensorflow as tf
+from activations_tf import get_tf_activation
+from fast_tokenizer.tokenization_utils_base import BatchEncoding
+from huggingface_hub import Repository, list_repo_files
+from modeling_tf_outputs import TFSeq2SeqLMOutput
+from requests import HTTPError
 from tensorflow.python.keras import backend as K
 from tensorflow.python.keras.engine import data_adapter
 
 # from tensorflow.python.keras.engine.keras_tensor import KerasTensor
 from tensorflow.python.keras.saving import hdf5_format
-
-from huggingface_hub import Repository, list_repo_files
-from requests import HTTPError
-
-from activations_tf import get_tf_activation
+from tf_utils import shape_list
 
 # from configuration_utils import PretrainedConfig
 from transformers.configuration_utils import PretrainedConfig
@@ -57,11 +59,6 @@ from transformers.file_utils import (
     is_remote_url,
 )
 from transformers.generation_tf_utils import TFGenerationMixin
-from modeling_tf_outputs import TFSeq2SeqLMOutput
-from tf_utils import shape_list
-from fast_tokenizer.tokenization_utils_base import BatchEncoding
-import logging
-
 
 logger = logging.getLogger(__name__)
 tf_logger = tf.get_logger()
@@ -1875,7 +1872,9 @@ class TFPreTrainedModel(
         model = cls(config, *model_args, **model_kwargs)
 
         if from_pt:
-            from .modeling_tf_pytorch_utils import load_pytorch_checkpoint_in_tf2_model
+            from transformers.modeling_tf_pytorch_utils import (
+                load_pytorch_checkpoint_in_tf2_model,
+            )
 
             # Load from a PyTorch checkpoint
             return load_pytorch_checkpoint_in_tf2_model(

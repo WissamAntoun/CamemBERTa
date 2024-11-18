@@ -1,15 +1,28 @@
 # CamemBERTa: A French language model based on DeBERTa V3
 
-The repos contains the code for training CamemBERTa, a French language model based on DeBERTa V3, a DeBerta V2 with ELECTRA style pretraining using the Replaced Token Detection (RTD) objective.
+The repos contains the code for training CamemBERTa, CamemBERTv2, and CamemBERTav2, a set of French language models based on DeBERTa V3, a DeBerta V2 with ELECTRA style pretraining using the Replaced Token Detection (RTD) objective, and on RoBERTa with the Masked Language Model (MLM) objective.
 RTD uses a generator model, trained using the MLM objective, to replace masked tokens with plausible candidates, and a discriminator model trained to detect which tokens were replaced by the generator.
 Usually the generator and discriminator share the same embedding matrix, but the authors of DeBERTa V3 propose a new technique to disentagle the gradients of the shared embedding between the generator and discriminator called gradient-disentangled embedding sharing (GDES)
 This the first publicly available implementation of DeBERTa V3, and the first publicly DeBERTaV3 model outside of the original [Microsoft release](https://github.com/microsoft/DeBERTa) .
 
-Preprint Paper: https://inria.hal.science/hal-03963729/
+CamemBERT 2.0 Paper: https://arxiv.org/pdf/2411.08868
+
+CamemBERTa Paper: https://aclanthology.org/2023.findings-acl.320/
 
 Models:
 - [CamemBERTa](https://huggingface.co/almanach/camemberta-base)
 - [CamemBERTa Generator](https://huggingface.co/almanach/camemberta-base-generator)
+- [CamemBERTaV2](https://huggingface.co/almanach/camembertav2-base)
+- [CamemBERTv2](https://huggingface.co/almanach/camembertv2-base)
+
+## Model update details
+
+The new v2 update includes:
+- Much larger pretraining dataset: 275B unique tokens (previously ~32B)
+- A newly built tokenizer based on WordPiece with 32,768 tokens, addition of the newline and tab characters, support emojis, and better handling of numbers (numbers are split into two digits tokens)
+- Extended context window of 1024 tokens
+
+More details are available in the [CamemBERTv2 paper](https://arxiv.org/abs/2411.08868).
 
 ## Gradient-Disentangled Embedding Sharing (GDES)
 
@@ -22,14 +35,24 @@ The embedding sharing is added in the [`PretrainingModel`](https://gitlab.inria.
 
 ## Pretraining Setup
 
-The model was trained on the French subset of the CCNet corpus (the same subset used in CamemBERT and PaGNOL) and is available on the HuggingFace model hub: [CamemBERTa](https://huggingface.co/almanach/camemberta-base) and [CamemBERTa Generator](https://huggingface.co/almanach/camemberta-base-generator).
+The v2 models were trained on French OSCAR dumps from the CulturaX Project, French scientific documents from HALvest, and the French Wikipedia for a total of 275B tokens.[CamemBERTav2-Collections](https://huggingface.co/collections/almanach/camembertav2-finetunes-6736601c501abd86ce3a0ef6) and [CamemBERTv2-Collections](https://huggingface.co/collections/almanach/camembertv2-finetunes-67365f0b0c6b2cc06829cb3c)
 
-To speed up the pre-training experiments, the pre-training was split into two phases;
+The v1 model was trained on the French subset of the CCNet corpus (the same subset used in CamemBERT and PaGNOL) and is available on the HuggingFace model hub: [CamemBERTa](https://huggingface.co/almanach/camemberta-base) and [CamemBERTa Generator](https://huggingface.co/almanach/camemberta-base-generator).
+
+To speed up the pre-training experiments, the pre-training was split into two phases:
+
+- For the v2 models:
+in phase 1, the model is trained with a maximum sequence length of 512 tokens for 91,500/270,000 steps for CamemBERTav2/CamemBERTv2 with 10,000 warm-up steps and a large batch size of 8192.
+In phase 2, maximum sequence length is increased to the full model capacity of 1024 tokens for 17,000 steps with 1000 warm-up steps and a batch size of 8192.
+
+- For the v1 model:
 in phase 1, the model is trained with a maximum sequence length of 128 tokens for 10,000 steps with 2,000 warm-up steps and a very large batch size of 67,584.
 In phase 2, maximum sequence length is increased to the full model capacity of 512 tokens for 3,300 steps with 200 warm-up steps and a batch size of 27,648.
 
 The model would have seen 133B tokens compared to 419B tokens for CamemBERT-CCNet which was trained for 100K steps, this represents roughly 30% of CamemBERT’s full training.
 To have a fair comparison, we trained a RoBERTa model, CamemBERT30%, using the same exact pretraining setup but with the MLM objective.
+
+
 ### Pretraining Loss Curves
 
 check the huggingface repo for the tensorboard logs and plots
@@ -38,11 +61,17 @@ check the huggingface repo for the tensorboard logs and plots
 
 Datasets: POS tagging and Dependency Parsing (GSD, Rhapsodie, Sequoia, FSMB), NER (FTB), the FLUE benchmark (XNLI, CLS, PAWS-X), and the French Question Answering Dataset (FQuAD)
 
-| Model             | UPOS      | LAS       | NER       | CLS       | PAWS-X    | XNLI      | F1 (FQuAD) | EM (FQuAD) |
-|-------------------|-----------|-----------|-----------|-----------|-----------|-----------|------------|------------|
-| CamemBERT (CCNet) | **97.59** | **88.69** | 89.97     | 94.62     | 91.36     | 81.95     | 80.98      | **62.51**  |
-| CamemBERT (30%)   | 97.53     | 87.98     | **91.04** | 93.28     | 88.94     | 79.89     | 75.14      | 56.19      |
-| CamemBERTa        | 97.57     | 88.55     | 90.33     | **94.92** | **91.67** | **82.00** | **81.15**  | 62.01      |
+## Fine-tuning Results:
+
+Datasets: POS tagging and Dependency Parsing (GSD, Rhapsodie, Sequoia, FSMB), NER (FTB), the FLUE benchmark (XNLI, CLS, PAWS-X), the French Question Answering Dataset (FQuAD), Social Media NER (Counter-NER), and Medical NER (CAS1, CAS2, E3C, EMEA, MEDLINE).
+
+| Model             | UPOS      | LAS       | FTB-NER   | CLS       | PAWS-X    | XNLI      | F1 (FQuAD) | EM (FQuAD) | Counter-NER | Medical-NER |
+|-------------------|-----------|-----------|-----------|-----------|-----------|-----------|------------|------------|-------------|-------------|
+| CamemBERT         | 97.59     | 88.69     | 89.97     | 94.62     | 91.36     | 81.95     | 80.98      | 62.51      | 84.18       | 70.96       |
+| CamemBERTa        | 97.57     | 88.55     | 90.33     | 94.92     | 91.67     | 82.00     | 81.15      | 62.01      | 87.37       | 71.86       |
+| CamemBERT-bio     | -         | -         | -         | -         | -         | -         | -          | -          | -           | 73.96       |
+| CamemBERTv2       | 97.66     | 88.64     | 81.99     | 95.07     | 92.00     | 81.75     | 80.98      | 61.35      | 87.46       | 72.77       |
+| **CamemBERTav2**  | **97.71** | 88.65     | **93.40** | **95.63** | **93.06** | **84.82** | **83.04**  | **64.29**  | **89.53**   | **73.98**   |
 
 The following table compares CamemBERTa's performance on XNLI against other models under different training setups, which demonstrates the data efficiency of CamelBERTa.
 
@@ -50,9 +79,11 @@ The following table compares CamemBERTa's performance on XNLI against other mode
 | Model             | XNLI (Acc.) | Training Steps | Tokens seen in pre-training | Dataset Size in Tokens |
 |-------------------|-------------|----------------|-----------------------------|------------------------|
 | mDeBERTa          | 84.4        | 500k           | 2T                          | 2.5T                   |
-| CamemBERTa        | 82.0        | 33k            | 0.139T                      | 0.319T                 |
+| CamemBERTa        | 82.0        | 33k            | 0.139T                      | 0.031T                 |
+| CamemBERTav2      | **84.82**   | 108k           | 0.4T                        | 0.275T                 |
 | XLM-R             | 81.4        | 1.5M           | 6T                          | 2.5T                   |
-| CamemBERT - CCNet | 81.95       | 100k           | 0.419T                      | 0.319T                 |
+| CamemBERT - CCNet | 81.95       | 100k           | 0.419T                      | 0.031T                 |
+| CamemBERTv2       | 81.75       | 285k           | 1T                          | 0.275T                 |
 
 *Note: The CamemBERTa training steps was adjusted for a batch size of 8192.*
 
@@ -78,11 +109,15 @@ CamemBERTa is compatible with most finetuning scripts from the `transformers` li
 
 - XLA support
 - FP16 support
+- BF16 support
 - Horovod support
 - Tensorflow Strategy support
+- TPU support
 - Customizable Generator depth and width
 - Export to PyTorch
 - Relatively easy extension to other models
+- Profiling support
+- Recording Gradients support
 
 ## Data Preparation
 
@@ -122,7 +157,7 @@ Treat this as research code, you might find some small bugs, so be patient.
 
 - The repo also support training with MLM or ELECTRA, with DebertaV2 and RoBERTa. The pretraining code could be improved to support other models, by doing some abstractions to make it easier to add support for other models.
 
-- Training (finetuning) DeBERTa V2 is ~30% slower than RoBERTa or BERT models even with XLA and FP16.
+- Training (finetuning) DeBERTa V2 is ~30% slower than RoBERTa or BERT models even with XLA and FP16 or BF16.
 
 
 ## License
@@ -131,21 +166,42 @@ This code is licensed under the Apache License 2.0. The public model weights are
 
 ## Citation
 
-Paper accepted to Findings of ACL 2023.
+CamemBERT(a)-v2 paper under review:
 
-You can use the preprint citation for now
+You can use the preprint citation for now:
 
+```bibtex
+@misc{antoun2024camembert20smarterfrench,
+      title={CamemBERT 2.0: A Smarter French Language Model Aged to Perfection},
+      author={Wissam Antoun and Francis Kulumba and Rian Touchent and Éric de la Clergerie and Benoît Sagot and Djamé Seddah},
+      year={2024},
+      eprint={2411.08868},
+      archivePrefix={arXiv},
+      primaryClass={cs.CL},
+      url={https://arxiv.org/abs/2411.08868},
+}
 ```
-@article{antoun2023camemberta
-  TITLE = {{Data-Efficient French Language Modeling with CamemBERTa}},
-  AUTHOR = {Antoun, Wissam and Sagot, Beno{\^i}t and Seddah, Djam{\'e}},
-  URL = {https://inria.hal.science/hal-03963729},
-  NOTE = {working paper or preprint},
-  YEAR = {2023},
-  MONTH = Jan,
-  PDF = {https://inria.hal.science/hal-03963729/file/French_DeBERTa___ACL_2023%20to%20be%20uploaded.pdf},
-  HAL_ID = {hal-03963729},
-  HAL_VERSION = {v1},
+
+CamemBERTa paper accepted to Findings of ACL 2023.
+
+
+```bibtex
+@inproceedings{antoun-etal-2023-data,
+    title = "Data-Efficient {F}rench Language Modeling with {C}amem{BERT}a",
+    author = "Antoun, Wissam  and
+      Sagot, Beno{\^\i}t  and
+      Seddah, Djam{\'e}",
+    editor = "Rogers, Anna  and
+      Boyd-Graber, Jordan  and
+      Okazaki, Naoaki",
+    booktitle = "Findings of the Association for Computational Linguistics: ACL 2023",
+    month = jul,
+    year = "2023",
+    address = "Toronto, Canada",
+    publisher = "Association for Computational Linguistics",
+    url = "https://aclanthology.org/2023.findings-acl.320",
+    doi = "10.18653/v1/2023.findings-acl.320",
+    pages = "5174--5185"
 }
 ```
 

@@ -1,6 +1,7 @@
 # coding=utf-8
 # Copyright 2020 The Google Research Authors.
 # Copyright (c) 2020 NVIDIA CORPORATION. All rights reserved.
+# Modified by Wissam Antoun - Almanach - Inria Paris 2022/2023
 
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +17,8 @@
 
 """Pre-trains a DebertaV3 model."""
 
+# Modified by Wissam Antoun - Almanach - Inria Paris 2024
+
 import argparse
 import json
 import os
@@ -23,13 +26,12 @@ import time
 from typing import Tuple
 
 import horovod.tensorflow as hvd
-import tensorflow as tf
-from horovod.tensorflow.compression import Compression
-
 import pretrain_utils
+import tensorflow as tf
 import utils
 from configuration_deberta_v2 import DebertaV3PretrainingConfig
 from configuration_roberta import RobertaPretrainingConfig
+from horovod.tensorflow.compression import Compression
 from model_training_utils import run_customized_training_loop
 from modeling_tf_deberta_v2 import PretrainingModel as DebertaPretrainingModel
 from modeling_tf_roberta import PretrainingModel as RobertaPretrainingModel
@@ -97,11 +99,16 @@ def main():
             log("Setting Visible Gpu: %s" % str(gpus[hvd.local_rank()]), all_rank=True)
             tf.config.set_visible_devices(gpus[hvd.local_rank()], "GPU")
 
+    if config.xla:
+        tf.config.optimizer.set_jit(True)
+        log("XLA is activated", all_rank=True)
+
     strategy = distribution_utils.get_distribution_strategy(
         distribution_strategy=config.distribution_strategy,
-        all_reduce_alg=None,
+        all_reduce_alg="nccl",
         num_gpus=config.num_gpus,
         tpu_address=config.tpu_address,
+        num_packs=1,
     )
 
     if strategy:
@@ -111,6 +118,9 @@ def main():
     if config.vocab_size % 8 != 0:
         config.vocab_size += 8 - (config.vocab_size % 8)
 
+    if config.amp and config.bf16:
+        raise ValueError("AMP(FP16) and BF16 should not be used together")
+
     if config.amp:
         if config.distribution_strategy == "tpu":
             raise ValueError("TPU doesn't support AMP")
@@ -118,6 +128,22 @@ def main():
         tf.keras.mixed_precision.set_global_policy(policy)
         print("Compute dtype: %s" % policy.compute_dtype)  # Compute dtype: float16
         print("Variable dtype: %s" % policy.variable_dtype)  # Variable dtype: float32
+
+    if config.bf16:
+        policy = tf.keras.mixed_precision.Policy("mixed_bfloat16")
+        tf.keras.mixed_precision.set_global_policy(policy)
+        print("Compute dtype: %s" % policy.compute_dtype)  # Compute dtype: bfloat16
+        print("Variable dtype: %s" % policy.variable_dtype)  # Variable dtype: float32
+        assert (
+            "bf16" in config.hidden_act
+        ), "hidden_act should be bf16 compatible such as gelu_bf16"
+        if config.model_type == "deberta-v2":
+            assert (
+                "bf16" in config.pooler_hidden_act
+            ), "pooler_hidden_act should be bf16 compatible such as gelu_bf16"
+            assert (
+                "bf16" in config.conv_act
+            ), "conv_act should be bf16 compatible such as gelu_bf16"
 
     tf.random.set_seed(config.seed)
     # tf.profiler.experimental.server.start(7789)
@@ -129,7 +155,9 @@ def main():
         log("Configuration saved in {}".format(pretrain_config_json))
 
     def _get_model() -> Tuple[
-        DebertaPretrainingModel, RobertaPretrainingModel, tf.keras.optimizers.Optimizer
+        DebertaPretrainingModel,
+        RobertaPretrainingModel,
+        tf.keras.optimizers.Optimizer,
     ]:
         # Set up model
         if model_type == "deberta-v2":
@@ -149,6 +177,7 @@ def main():
             optimizer=config.optimizer,
             skip_adaptive=config.skip_adaptive,
             power=config.lr_decay_power,
+            schedule=config.lr_schedule,
             beta_1=config.opt_beta_1,
             beta_2=config.opt_beta_2,
             end_lr=config.end_lr,
@@ -176,7 +205,7 @@ def main():
         )
         if config.disc_weight > 0:
             metrics["disc_loss"] = tf.keras.metrics.Mean(name="disc_loss")
-            metrics["disc_auc"] = tf.keras.metrics.AUC(name="disc_auc")
+            # metrics["disc_auc"] = tf.keras.metrics.AUC(name="disc_auc")
             metrics["disc_accuracy"] = tf.keras.metrics.Accuracy(name="disc_accuracy")
             metrics["disc_precision"] = tf.keras.metrics.Accuracy(name="disc_precision")
             metrics["disc_recall"] = tf.keras.metrics.Accuracy(name="disc_recall")
@@ -186,14 +215,16 @@ def main():
         config=config,
         model_fn=_get_model,
         loss_fn=get_loss_fn(
-            loss_factor=1.0 / strategy.num_replicas_in_sync
-            if config.scale_loss and strategy
-            else 1.0
+            loss_factor=(
+                1.0 / strategy.num_replicas_in_sync
+                if config.scale_loss and strategy
+                else 1.0
+            )
         ),
         train_input_fn=dataset,
         metric_fn_dict=metrics,
         hvd=hvd if config.use_horovod else None,
-        run_eagerly=config.debug,
+        run_eagerly=not config.xla or config.debug,
     )
 
     return config

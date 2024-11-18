@@ -1,0 +1,6 @@
+{
+    "architectures": [
+        "RobertaForMaskedLM"
+    ],
+    "model_type": "roberta"
+}

@@ -14,27 +14,30 @@
 # ==============================================================================
 """A light weight utilities to train NLP models."""
 
+# Modified by Wissam Antoun - Almanach - Inria Paris 2024
+
 from __future__ import absolute_import, division, print_function
 
 import datetime
 import json
 import os
 import time
+from contextlib import nullcontext
+from copy import deepcopy
 
+import numpy as np
 import tensorflow as tf
-from horovod.tensorflow.compression import Compression
-
 import utils
 from configuration_deberta_v2 import DebertaV3PretrainingConfig
+from horovod.tensorflow.compression import Compression
 from modeling_tf_deberta_v2 import PretrainingModel as DebertaPretrainingModel
 from modeling_tf_roberta import PretrainingModel as RobertaPretrainingModel
 from official_utils.misc import distribution_utils
 from optimization import GradientAccumulatorv2
 from utils import log
 
-
 _SUMMARY_TXT = "training_summary.txt"
-_MIN_SUMMARY_STEPS = 10
+_MIN_SUMMARY_STEPS = 0
 
 # tf.get_logger().setLevel("DEBUG")
 # logging = tf.get_logger()
@@ -199,6 +202,31 @@ def run_customized_training_loop(
     with distribution_utils.get_strategy_scope(strategy):
         # To correctly place the model weights on accelerators,
         # model and optimizer should be created in scope.
+        if config.bf16 and config.model_type == "roberta":
+            # fixes The DTypes <class 'numpy.dtype[bfloat16]'> and <class 'numpy.dtype[float16]'> do not have a common DType.
+            config.hidden_dropout_prob = tf.constant(
+                config.hidden_dropout_prob, dtype=tf.bfloat16
+            )
+            config.attention_probs_dropout_prob = tf.constant(
+                config.attention_probs_dropout_prob, dtype=tf.bfloat16
+            )
+            if hasattr(config, "pooler_dropout"):
+                config.pooler_dropout_prob = tf.constant(
+                    config.pooler_dropout_prob, dtype=tf.bfloat16
+                )
+
+        # if config.amp:
+        #     config.hidden_dropout_prob = tf.constant(
+        #         config.hidden_dropout_prob, dtype=tf.float16
+        #     )
+        #     config.attention_probs_dropout_prob = tf.constant(
+        #         config.attention_probs_dropout_prob, dtype=tf.float16
+        #     )
+        #     if hasattr(config, "pooler_dropout"):
+        #         config.pooler_dropout_prob = tf.constant(
+        #             config.pooler_dropout_prob, dtype=tf.float16
+        #         )
+
         model: DebertaPretrainingModel = None
         model, optimizer = model_fn()
 
@@ -228,13 +256,14 @@ def run_customized_training_loop(
             if steps_per_loop >= _MIN_SUMMARY_STEPS:
                 # Only writes summary when the stats are collected sufficiently over
                 # enough steps.
+                train_summary_writer_path = os.path.join(
+                    summary_dir,
+                    "train",
+                    "p2" if config.phase2 else "p1",
+                    current_time,
+                )
                 train_summary_writer = tf.summary.create_file_writer(
-                    os.path.join(
-                        summary_dir,
-                        "train",
-                        "p2" if config.phase2 else "p1",
-                        current_time,
-                    )
+                    train_summary_writer_path
                 )
             else:
                 train_summary_writer = None
@@ -285,6 +314,32 @@ def run_customized_training_loop(
                     )
             return metrics
 
+        def record_gradients(grads, trainable_variables, current_step):
+            if train_summary_writer and (not hvd or hvd.rank() == 0):
+                with train_summary_writer.as_default():
+                    for grad, var in zip(grads, trainable_variables):
+                        tf.summary.histogram(
+                            var.name.replace(":", "_") + "/gradients",
+                            grad,
+                            step=current_step,
+                        )
+                        tf.summary.scalar(
+                            "{}_max".format(var.name.replace(":", "_")),
+                            tf.reduce_max(grad),
+                            step=current_step,
+                        )
+                        tf.summary.scalar(
+                            "{}_min".format(var.name.replace(":", "_")),
+                            tf.reduce_min(grad),
+                            step=current_step,
+                        )
+                        tf.summary.scalar(
+                            "{}_mean".format(var.name.replace(":", "_")),
+                            tf.reduce_mean(grad),
+                            step=current_step,
+                        )
+                    train_summary_writer.flush()
+
         def _replicated_step(inputs, first_batch=False):
             """Replicated training step."""
 
@@ -298,9 +353,11 @@ def run_customized_training_loop(
                 tape = hvd.DistributedGradientTape(
                     tape,
                     sparse_as_dense=True,
-                    compression=Compression.fp16
-                    if config.fp16_compression
-                    else Compression.none,
+                    compression=(
+                        Compression.fp16
+                        if config.fp16_compression
+                        else Compression.none
+                    ),
                 )
 
             # Collects training variables.
@@ -312,17 +369,25 @@ def run_customized_training_loop(
                 grads = tape.gradient(loss, model.trainable_variables)
 
             (grads, _) = tf.clip_by_global_norm(grads, clip_norm=1.0)
-            optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
+            optimizer.apply_gradients(zip(grads, model.trainable_variables))
+            if config.record_gradients:
+                record_gradients(
+                    grads=grads,
+                    trainable_variables=model.trainable_variables,
+                    current_step=np.int64(int(optimizer.iterations)),
+                )
             if hvd and first_batch:
                 hvd.broadcast_variables(model.variables, 0)
                 hvd.broadcast_variables(optimizer.variables(), 0)
+                hvd.allreduce(tf.constant(0, dtype=tf.int32), name="barrier")
+                log(" ** All ranks have completed barrier.", all_rank=True)
 
             # For reporting, the metric takes the mean of losses.
             train_loss_metric.update_state(loss)
             run_metric_fn(config, train_metrics, model_outputs)
 
-        @tf.function(jit_compile=config.xla)
+        # @tf.function(jit_compile=config.xla)
         def _forward(inputs):
             with tf.GradientTape() as tape:
                 loss, model_outputs = model(inputs, is_training=True)
@@ -343,13 +408,17 @@ def run_customized_training_loop(
         def _step(num_grad_accumulates):
             if hvd:
                 gradients = [
-                    None
-                    if g is None
-                    else hvd.allreduce(
-                        g / tf.cast(num_grad_accumulates, g.dtype),
-                        compression=Compression.fp16
-                        if config.fp16_compression
-                        else Compression.none,
+                    (
+                        None
+                        if g is None
+                        else hvd.allreduce(
+                            g / tf.cast(num_grad_accumulates, g.dtype),
+                            compression=(
+                                Compression.fp16
+                                if config.fp16_compression
+                                else Compression.none
+                            ),
+                        )
                     )
                     for g in accum_gradients.gradients
                 ]
@@ -361,9 +430,15 @@ def run_customized_training_loop(
             (gradients, _) = tf.clip_by_global_norm(gradients, clip_norm=1.0)
 
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
+            if config.record_gradients:
+                record_gradients(
+                    grads=gradients,
+                    trainable_variables=model.trainable_variables,
+                    current_step=optimizer.iterations,
+                )
             accum_gradients.reset()
 
-        @tf.function
+        # @tf.function
         def train_steps_strategy(iterator, steps, num_grad_accumulates):
             """Performs distributed training steps in a loop.
 
@@ -390,7 +465,7 @@ def run_customized_training_loop(
                 for step_idx in tf.range(steps):
                     strategy.run(_replicated_step, args=(next(iterator),))
 
-        @tf.function
+        # @tf.function
         def train_steps(iterator, steps, num_grad_accumulates, first_batch):
             if not isinstance(steps, tf.Tensor):
                 raise ValueError(
@@ -404,12 +479,19 @@ def run_customized_training_loop(
                         _step(num_grad_accumulates)
                     if hvd and step_idx == 0 and first_batch:
                         hvd.broadcast_variables(model.variables, 0)
-                        hvd.broadcast_variables(optimizer.variables(), 0)
+                        hvd.broadcast_variables(
+                            optimizer.variables(), 0
+                        )  # this was optjmiizer.variables() but on aws it was throwing error
+                        hvd.allreduce(tf.constant(0, dtype=tf.int32), name="barrier")
+                        log(
+                            " ** All ranks have completed barrier after first batch.",
+                            all_rank=True,
+                        )
             else:
                 for step_idx in tf.range(steps):
                     _replicated_step(next(iterator), (first_batch and step_idx == 0))
 
-        @tf.function
+        # @tf.function
         def train_single_step_strategy(iterator, num_grad_accumulates):
             """Performs a distributed training step.
 
@@ -444,6 +526,8 @@ def run_customized_training_loop(
                     if hvd and _ == 0 and first_batch:
                         hvd.broadcast_variables(model.variables, 0)
                         hvd.broadcast_variables(optimizer.variables(), 0)
+                        hvd.allreduce(tf.constant(0, dtype=tf.int32), name="barrier")
+                        log(" ** All ranks have completed barrier.", all_rank=True)
             else:
                 _replicated_step(next(iterator), first_batch)
 
@@ -462,8 +546,15 @@ def run_customized_training_loop(
             else:
                 _test_step_fn(next(iterator))
 
+        # TF_EXTRA_PTXAS_OPTIONS="-sw200428197=true" to add maybe it helps
         if not run_eagerly:
+            _forward = tf.function(_forward, jit_compile=config.xla)
+            _step = tf.function(_step)
+            _replicated_step = tf.function(_replicated_step)
             train_single_step = tf.function(train_single_step)
+            train_single_step_strategy = tf.function(train_single_step_strategy)
+            train_steps = tf.function(train_steps)
+            train_steps_strategy = tf.function(train_steps_strategy)
             test_step = tf.function(test_step)
 
         def _run_evaluation(current_training_step, test_iterator):
@@ -545,6 +636,15 @@ def run_customized_training_loop(
             bool(config.restore_checkpoint) and config.restore_checkpoint == "latest"
         )
 
+        # reset is dangerous to use, since it will reset the optimizer state
+        # whenever the training is resumed from a checkpoint.
+        # only use it when you are sure that you want to reset the optimizer state.
+        # Then modify the config file to remove the reset flag right after the training launches
+        # I used it to reset the optimizer state when i switched phase beyond phase 2
+        if getattr(config, "reset", False):
+            optimizer.iterations.assign(0)
+            checkpoint.step.assign(0)
+            restore_iterator = False
         # Initialize global step for phase2
         if config.phase2 and not bool(checkpoint.phase2):
             optimizer.iterations.assign(0)
@@ -587,7 +687,8 @@ def run_customized_training_loop(
                     log(
                         " ** Restored iterator checkpoint from {}".format(
                             iter_manager.latest_checkpoint
-                        )
+                        ),
+                        all_rank=True,
                     )
 
         # log(" *********** CHECKING EMBEDDINGS ***********")
@@ -595,6 +696,21 @@ def run_customized_training_loop(
         # log(model.discriminator.debertav2.deberta.embeddings.weight)
 
         current_step = int(checkpoint.step.numpy())
+
+        if train_summary_writer and (not hvd or hvd.rank() == 0):
+            # log the config
+            with train_summary_writer.as_default():
+                _config = deepcopy(config)
+                _config.hidden_dropout_prob = float(_config.hidden_dropout_prob)
+                _config.attention_probs_dropout_prob = float(
+                    _config.attention_probs_dropout_prob
+                )
+                if hasattr(_config, "pooler_dropout_prob"):
+                    _config.pooler_dropout_prob = float(_config.pooler_dropout_prob)
+                tf.summary.text(
+                    "config", json.dumps(_config.__dict__, indent=4), step=current_step
+                )
+                train_summary_writer.flush()
 
         checkpoint_name = "ckpt-{step}.ckpt"
 
@@ -610,12 +726,33 @@ def run_customized_training_loop(
         log(" ** Remaining steps {}".format(total_running_steps))
         train_start = time.time()
         accum_gradients.reset()
-        while current_step < total_training_steps:
+        data_exhausted_flag = False
+        slurm_job_end_flag = False
+        slurm_job_end_time = os.getenv("SLURM_JOB_END_TIME", None)
+        min_loss = 1e9
+        loss_spike_counter = 0
+        if config.profile and (not hvd or hvd.rank() == 0):
+            tf.profiler.experimental.start(
+                train_summary_writer_path,
+                tf.profiler.experimental.ProfilerOptions(
+                    host_tracer_level=2,
+                    python_tracer_level=0,
+                    device_tracer_level=1,
+                ),
+            )
+
+        if hvd:
+            # Setup barrier to prevent other ranks from entering the training loop until
+            # all ranks have completed the setup.
+            hvd.allreduce(tf.constant(0, dtype=tf.int32), name="barrier")
+            log(" ** All ranks have completed barrier.", all_rank=True)
+
+        while current_step < total_training_steps and not data_exhausted_flag:
             # Training loss/metric are taking average over steps inside micro
             # training loop. We reset the their values before each round.
-            train_loss_metric.reset_states()
+            train_loss_metric.reset_state()
             for metric in train_metrics.values():
-                metric.reset_states()
+                metric.reset_state()
 
             _run_callbacks_on_batch_begin(current_step)
             # Runs several steps in the host while loop.
@@ -623,30 +760,42 @@ def run_customized_training_loop(
             steps = config.log_freq
 
             t0_wo = time.time()
-            if steps == 1:
-                # TODO(zongweiz): merge with train_steps once tf.while_loop
-                # GPU performance bugs are fixed.
-                if strategy:
-                    train_single_step_strategy(train_iterator, num_accumulative_step)
-                else:
-                    train_single_step(
-                        train_iterator, num_accumulative_step, first_batch
-                    )
-            else:
-                # Converts steps to a Tensor to avoid tf.function retracing.
-                if strategy:
-                    train_steps_strategy(
-                        train_iterator,
-                        tf.convert_to_tensor(steps, dtype=tf.int32),
-                        num_accumulative_step,
-                    )
-                else:
-                    train_steps(
-                        train_iterator,
-                        tf.convert_to_tensor(steps, dtype=tf.int32),
-                        num_accumulative_step,
-                        first_batch,
-                    )
+
+            with (
+                tf.profiler.experimental.Trace("Train", step_num=current_step, _r=1)
+                if config.profile and (not hvd or hvd.rank() == 0)
+                else nullcontext()
+            ):
+                try:
+                    if steps == 1:
+                        # TODO(zongweiz): merge with train_steps once tf.while_loop
+                        # GPU performance bugs are fixed.
+                        if strategy:
+                            train_single_step_strategy(
+                                train_iterator, num_accumulative_step
+                            )
+                        else:
+                            train_single_step(
+                                train_iterator, num_accumulative_step, first_batch
+                            )
+                    else:
+                        # Converts steps to a Tensor to avoid tf.function retracing.
+                        if strategy:
+                            train_steps_strategy(
+                                train_iterator,
+                                tf.convert_to_tensor(steps, dtype=tf.int32),
+                                tf.convert_to_tensor(num_accumulative_step),
+                            )
+                        else:
+                            train_steps(
+                                train_iterator,
+                                tf.convert_to_tensor(steps, dtype=tf.int32),
+                                num_accumulative_step,
+                                first_batch,
+                            )
+                except (StopIteration, tf.errors.OutOfRangeError):
+                    log(" *** Dataset exhausted, stopping training ***")
+                    data_exhausted_flag = True
 
             if first_batch and (not hvd or hvd.rank() == 0):
                 log(model.summary())
@@ -656,17 +805,53 @@ def run_customized_training_loop(
             current_step += steps
 
             train_loss = _float_metric_value(train_loss_metric)
+            min_loss = min(min_loss, train_loss)
 
-            train_metrics["train_perf"].update_state(
-                steps * global_batch_size / (time.time() - t0_wo)
-            )
+            if hvd:
+                train_metrics["train_perf"].update_state(
+                    steps * global_batch_size / (time.time() - t0_wo)
+                )
+            else:
+                strategy.run(
+                    train_metrics["train_perf"].update_state,
+                    args=(steps * global_batch_size / (time.time() - t0_wo),),
+                )
 
-            train_metrics["learning_rate"].update_state(
-                optimizer._optimizer._decayed_lr("float32")
-            )
-            train_metrics["loss_scale"].update_state(
-                optimizer.loss_scale if config.amp else 1
-            )
+            if isinstance(optimizer, tf.keras.mixed_precision.LossScaleOptimizer):
+                if hvd:
+                    train_metrics["learning_rate"].update_state(
+                        optimizer._optimizer.learning_rate.numpy()
+                    )
+                else:
+                    strategy.run(
+                        train_metrics["learning_rate"].update_state,
+                        args=(optimizer._optimizer.learning_rate,),
+                    )
+            else:
+                if hvd:
+                    if "lamb" in config.optimizer:
+                        train_metrics["learning_rate"].update_state(
+                            optimizer._decayed_lr("float32")
+                        )
+                    else:
+                        train_metrics["learning_rate"].update_state(
+                            optimizer.learning_rate.numpy()
+                        )
+                else:
+                    strategy.run(
+                        train_metrics["learning_rate"].update_state,
+                        args=(optimizer.learning_rate,),
+                    )
+
+            if hvd:
+                train_metrics["loss_scale"].update_state(
+                    optimizer.loss_scale if config.amp else 1
+                )
+            else:
+                strategy.run(
+                    train_metrics["loss_scale"].update_state,
+                    args=(optimizer.loss_scale if config.amp else 1,),
+                )
 
             # log(" *********** CHECKING EMBEDDINGS Again***********")
             # log(model.generator.deberta.embeddings.weight)
@@ -675,9 +860,11 @@ def run_customized_training_loop(
 
             # Updates training logging.
             log_info_dict = {
-                k: float(v.result().numpy() * 100)
-                if "accuracy" in k
-                else float(v.result().numpy())
+                k: (
+                    float(v.result().numpy() * 100)
+                    if "accuracy" in k or "precision" in k or "recall" in k
+                    else float(v.result().numpy())
+                )
                 for k, v in train_metrics.items()
             }
 
@@ -686,16 +873,22 @@ def run_customized_training_loop(
             Loss:{total_loss:10.6f},
             Gen_loss:{masked_lm_loss:10.6f},
             Gen_acc:{masked_lm_accuracy:6.2f},
-            Perf:{train_perf:4.0f},
+            Perf:{train_perf:4.0f} examples/sec,
             Loss Scaler: {loss_scale:4.0f},
             Learning Rate: {learning_rate:.6f},
             Elapsed: {elapsed},
             ETA: {eta},
             """
-            +"""
+            training_status += (
+                """
             Disc_loss:{disc_loss:10.6f},
             Disc_acc:{disc_accuracy:6.2f},
-            """ if "disc_loss" in log_info_dict else ""
+            Disc_precision:{disc_precision:6.2f},
+            Disc_recall:{disc_recall:6.2f},
+            """
+                if "disc_loss" in log_info_dict
+                else ""
+            )
 
             training_status = training_status.format(
                 step=current_step,
@@ -712,14 +905,16 @@ def run_customized_training_loop(
             if not hvd or hvd.rank() == 0:
                 log(training_status)
 
-            checkpoint.step.assign(int(optimizer.iterations))
+            if hvd:
+                checkpoint.step.assign(int(optimizer.iterations))
+            else:
+                checkpoint.step.assign(int(optimizer.iterations.numpy()))
 
             # save_checkpoint
             if (
                 config.save_checkpoints_steps > 0
                 and current_step % config.save_checkpoints_steps == 0
             ):
-
                 if not hvd or hvd.rank() == 0:
                     save_path = manager.save(checkpoint_number=current_step)
                     log("Saved checkpoint to {}".format(save_path))
@@ -756,10 +951,39 @@ def run_customized_training_loop(
                     )
                     # Re-initialize evaluation metric.
                     for metric in eval_metrics.values():
-                        metric.reset_states()
+                        metric.reset_state()
+
+            # check if loss spikes
+            if train_loss > min_loss * 2:
+                loss_spike_counter += 1
+
+            if loss_spike_counter > 5:
+                log(" *** Loss Spike Detected, stopping training ***")
+                break
+
+            slurm_job_end_flag = (
+                (time.time() + (time.time() - t0_wo) + 300) > int(slurm_job_end_time)
+                if slurm_job_end_time
+                else False
+            )
+            if slurm_job_end_flag:
+                log(" *** SLURM Job Ending, stopping training ***")
+                break
 
         total_time = time.time() - start_time
-        if not hvd or hvd.rank() == 0:
+
+        if config.profile and (not hvd or hvd.rank() == 0):
+            tf.profiler.experimental.stop()
+
+        if hvd and loss_spike_counter <= 5:
+            iter_save_path = iter_manager.save(checkpoint_number=current_step)
+            log(
+                " ** Saved iterator checkpoint for step {}: {}".format(
+                    current_step, iter_save_path
+                ),
+                all_rank=True,
+            )
+        if (not hvd or hvd.rank() == 0) and loss_spike_counter <= 5:
             save_path = manager.save(checkpoint_number=current_step)
             log("Saved checkpoint to {}".format(save_path))
 
@@ -796,14 +1020,14 @@ def run_customized_training_loop(
                 log("Multi-GPU training with TF Horovod")
                 log("hvd.size() = {}".format(hvd.size()))
             log(
-                "Total Training Time = {:.0.2f} for Sentences = {}".format(
+                "Total Training Time = {} for Sentences = {}".format(
                     total_time,
                     total_sentences,
                 )
             )
             if total_time != 0:
                 log(
-                    "Throughput Average (sentences/sec) with overhead = {:.0.2f}".format(
+                    "Throughput Average (sentences/sec) with overhead = {}".format(
                         total_sentences / total_time
                     )
                 )

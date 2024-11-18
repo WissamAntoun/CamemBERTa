@@ -19,11 +19,10 @@
 import collections
 import os
 
+import horovod.tensorflow as hvd
 import numpy as np
 import tensorflow as tf
-import horovod.tensorflow as hvd
 import utils
-import tokenization
 from configuration_deberta_v2 import DebertaV3PretrainingConfig
 
 tf.get_logger().setLevel("DEBUG")
@@ -62,7 +61,15 @@ def get_dataset(
             input_pipeline_context.input_pipeline_id,
         )
 
-    d = d.repeat()
+    try:
+        if config.repeat_dataset:
+            if isinstance(config.repeat_dataset, bool):
+                d = d.repeat()
+            else:
+                d = d.repeat(config.repeat_dataset)
+    except Exception as e:
+        logging.info("config.repeat_dataset failed: %s", e)
+        d = d.repeat()
 
     cycle_length = min(8, len(input_files))
     d = d.interleave(
@@ -72,7 +79,9 @@ def get_dataset(
         num_parallel_calls=tf.data.experimental.AUTOTUNE,
     )
     if is_training:
-        d = d.shuffle(buffer_size=100, seed=config.seed, reshuffle_each_iteration=False)
+        d = d.shuffle(buffer_size=100, seed=config.seed, reshuffle_each_iteration=True)
+
+    # d = d.apply(tf.data.experimental.ignore_errors(True))
 
     d = d.map(
         lambda record: _decode_record(record, name_to_features),
@@ -190,7 +199,7 @@ def get_shape_list(tensor, expected_rank=None, name=None):
     shape = tensor.shape.as_list()
 
     non_static_indexes = []
-    for (index, dim) in enumerate(shape):
+    for index, dim in enumerate(shape):
         if dim is None:
             non_static_indexes.append(index)
 
@@ -300,6 +309,33 @@ def _get_candidates_mask(inputs: Inputs, ignore_ids, disallow_from_mask=None):
     return candidates_mask
 
 
+def replace_zero_rows(
+    zero_row, replace_with_mask_positions, masked_lm_positions, masked_lm_weights
+):
+    # Create a row with the first element as 5 and the rest as 0
+    N = tf.shape(replace_with_mask_positions)[1]  # Assuming N is the number of columns
+    row = tf.concat([tf.constant([5]), tf.zeros([N - 1], tf.int32)], 0)
+
+    # Replace the zero row with the created row
+    replace_with_mask_positions = tf.where(
+        tf.expand_dims(zero_row, 1), row, replace_with_mask_positions
+    )
+
+    masked_lm_positions = tf.where(
+        tf.expand_dims(zero_row, 1), row, masked_lm_positions
+    )
+
+    masked_lm_weights = tf.where(
+        tf.expand_dims(zero_row, 1),
+        tf.cast(
+            tf.concat([tf.constant([1]), tf.zeros([N - 1], tf.int32)], 0), tf.float32
+        ),
+        masked_lm_weights,
+    )
+
+    return replace_with_mask_positions, masked_lm_positions, masked_lm_weights
+
+
 def mask(
     config,
     inputs,
@@ -356,6 +392,53 @@ def mask(
     masked_lm_positions = tf.random.categorical(sample_logits, N, dtype=tf.int32)
     masked_lm_positions *= tf.cast(masked_lm_weights, tf.int32)
 
+    # Update the input ids
+    replace_with_mask_positions = masked_lm_positions * tf.cast(
+        tf.less(tf.random.uniform([B, N]), 0.85), tf.int32
+    )
+
+    # for testing purposes, we want to have a zero row
+    # replace_with_mask_positions_fake = tf.concat([replace_with_mask_positions[:1], tf.zeros([1, N], tf.int32), replace_with_mask_positions[2:]], 0)
+    # get the sum per row and check that there is no zero row
+    sum_per_row = tf.reduce_sum(replace_with_mask_positions, axis=1)
+    zero_row = tf.equal(sum_per_row, 0)
+
+    # if tf.reduce_any(zero_row):
+    #     # replace the zero row with a row where the first element is 5
+    #     # create a row with the first element 5 and the rest 0
+    #     row = tf.concat([tf.constant([5]), tf.zeros([N - 1], tf.int32)], 0)
+    #     # replace the zero row with the row
+    #     replace_with_mask_positions = tf.where(
+    #         tf.expand_dims(zero_row, 1),
+    #         row,
+    #         replace_with_mask_positions,
+    #     )
+    #     masked_lm_positions = tf.where(
+    #         tf.expand_dims(zero_row, 1),
+    #         row,
+    #         masked_lm_positions,
+    #     )
+    #     masked_lm_weights = tf.where(
+    #         tf.expand_dims(zero_row, 1),
+    #         tf.cast(
+    #             tf.concat([tf.constant([1]), tf.zeros([N - 1], tf.int32)], 0),
+    #             tf.float32,
+    #         ),
+    #         masked_lm_weights,
+    #     )
+
+    # Use tf.cond to perform the operation based on the condition
+    replace_with_mask_positions, masked_lm_positions, masked_lm_weights = tf.cond(
+        tf.reduce_any(zero_row),
+        lambda: replace_zero_rows(
+            zero_row,
+            replace_with_mask_positions,
+            masked_lm_positions,
+            masked_lm_weights,
+        ),
+        lambda: (replace_with_mask_positions, masked_lm_positions, masked_lm_weights),
+    )
+
     # Get the ids of the masked-out tokens
     shift = tf.expand_dims(L * tf.range(B), -1)
     flat_positions = tf.reshape(masked_lm_positions + shift, [-1, 1])
@@ -363,10 +446,6 @@ def mask(
     masked_lm_ids = tf.reshape(masked_lm_ids, [B, -1])
     masked_lm_ids *= tf.cast(masked_lm_weights, tf.int32)
 
-    # Update the input ids
-    replace_with_mask_positions = masked_lm_positions * tf.cast(
-        tf.less(tf.random.uniform([B, N]), 0.85), tf.int32
-    )
     inputs_ids, _ = scatter_update(
         inputs.input_ids,
         tf.fill([B, N], config.ignore_ids_dict["[MASK]"]),

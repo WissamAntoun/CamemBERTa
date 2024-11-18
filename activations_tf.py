@@ -31,6 +31,22 @@ def _gelu(x):
     return x * cdf
 
 
+def _gelu_bf16(x):
+    """
+    Gaussian Error Linear Unit. Original Implementation of the gelu activation function in Google Bert repo when
+    initially created. For information: OpenAI GPT's gelu is slightly different (and gives slightly different results):
+    0.5 * x * (1 + torch.tanh(math.sqrt(2 / math.pi) * (x + 0.044715 * torch.pow(x, 3)))) Also see
+    https://arxiv.org/abs/1606.08415
+    """
+
+    x = tf.convert_to_tensor(x)
+    cdf = tf.cast(0.5, x.dtype) * (
+        tf.cast(1.0, x.dtype) + tf.math.erf(x / tf.cast(1.4142135623730951, x.dtype))
+    )
+
+    return x * cdf
+
+
 def _gelu_new(x):
     """
     Gaussian Error Linear Unit. This is a smoother version of the GELU. Original paper: https://arxiv.org/abs/1606.0841
@@ -123,6 +139,7 @@ ACT2FN = {
     "quick_gelu": quick_gelu,
     "gelu_10": gelu_10,
     "glu": glu,
+    "gelu_bf16": _gelu_bf16,
 }
 
 

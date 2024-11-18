@@ -14,7 +14,7 @@
 # limitations under the License.
 """ Roberta and Roberta for Deberta style pretraining model configuration"""
 
-# Modified by Wissam Antoun - Almanach - Inria Paris 2022/2023
+# Modified by Wissam Antoun - Almanach - Inria Paris 2024
 
 import os
 
@@ -95,6 +95,7 @@ class RobertaConfig(PretrainedConfig):
         layer_norm_eps (`float`, optional, defaults to 1e-12):
             The epsilon used by the layer normalization layers.
     """
+
     model_type = "roberta"
 
     def __init__(
@@ -112,7 +113,7 @@ class RobertaConfig(PretrainedConfig):
         type_vocab_size=1,
         initializer_range=0.02,
         layer_norm_eps=1e-7,
-        pad_token_id=1,
+        pad_token_id=0,
         position_biased_input=True,
         **kwargs
     ):
@@ -126,7 +127,7 @@ class RobertaConfig(PretrainedConfig):
         self.hidden_act = hidden_act
         self.hidden_dropout_prob = hidden_dropout_prob
         self.attention_probs_dropout_prob = attention_probs_dropout_prob
-        self.max_position_embeddings = max_position_embeddings
+        self.max_position_embeddings = max_position_embeddings  # This needs to be equal to actual max position embeddings plus padding_token_id plus 1
         self.type_vocab_size = type_vocab_size
         self.initializer_range = initializer_range
         self.pad_token_id = pad_token_id
@@ -144,22 +145,26 @@ class RobertaPretrainingConfig(object):
         self.seed = 42
 
         self.debug = False  # debug mode for quickly running things
-        self.do_train = True  # pre-train DeBERTa
+        self.do_train = True
         self.do_eval = False  # evaluate generator/discriminator on unlabeled data
         self.phase2 = False
+        self.record_gradients = False
+        self.profile = False
 
         # amp
         self.distribution_strategy = "one_device"
         self.use_horovod = False
         self.num_gpus = 1
         self.tpu_address = ""
-        self.amp = True
+        self.amp = False
         self.xla = True
         self.fp16_compression = False
+        self.bf16 = False
 
         # optimizer type
         self.optimizer = "adam"
         self.gradient_accumulation_steps = 1
+        self.lr_schedule = "linear"
 
         # lamb whitelisting for LN and biases
         self.skip_adaptive = False
@@ -233,6 +238,7 @@ class RobertaPretrainingConfig(object):
         self.type_vocab_size = 1
         self.position_biased_input = True
         self.data_prep_working_dir = os.getenv("DATA_PREP_WORKING_DIR", "")
+        self.repeat_dataset = True
         self.update(kwargs)
         # default locations of data files
 
@@ -240,7 +246,16 @@ class RobertaPretrainingConfig(object):
             "data", "pretrain_tfrecords/pretrain_data.tfrecord*"
         )
         self.vocab_file = os.path.join("vocab", "vocab.txt")
-        self.ignore_ids_dict = {"[SEP]": 2, "[CLS]": 1, "[MASK]": 32000}
+        self.ignore_ids_dict = {
+            "[PAD]": 0,
+            "[CLS]": 1,
+            "[SEP]": 2,
+            "[UNK]": 3,
+            "[MASK]": 4,
+        }
+        self.pad_token_id = 0
+        self.bos_token_id = 1
+        self.eos_token_id = 2
         self.model_dir = os.path.join(self.results_dir, "models", model_name)
         self.checkpoints_dir = os.path.join(self.model_dir, "checkpoints")
         self.weights_dir = os.path.join(self.model_dir, "weights")

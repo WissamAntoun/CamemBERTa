@@ -13,6 +13,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+echo "Printing env vars in bind.sh"
+printenv
+
 set -euo pipefail
 
 print_usage() {
@@ -84,7 +87,7 @@ fi
 # LOCAL_RANK is set with an enroot hook for Pytorch containers
 # SLURM_LOCALID is set by Slurm
 # OMPI_COMM_WORLD_LOCAL_RANK is set by mpirun
-readonly local_rank="${LOCAL_RANK:=${SLURM_LOCALID:=${OMPI_COMM_WORLD_LOCAL_RANK:=${HOROVOD_RANK:-}}}}"
+readonly local_rank="${LOCAL_RANK:=${OMPI_COMM_WORLD_LOCAL_RANK:=${SLURM_LOCALID:=${HOROVOD_RANK:-}}}}"
 if [ -z "${local_rank}" ]; then
     echo 'ERROR: cannot read LOCAL_RANK from env' >&2
     exit 1

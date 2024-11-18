@@ -14,7 +14,7 @@
 # limitations under the License.
 """ DeBERTa-v2 and DeBERTaV3 pretraining model configuration"""
 
-# Modified by Wissam Antoun - Almanach - Inria Paris 2022/2023
+# Modified by Wissam Antoun - Almanach - Inria Paris 2024
 
 import os
 
@@ -85,6 +85,7 @@ class DebertaV2Config(PretrainedConfig):
         layer_norm_eps (`float`, optional, defaults to 1e-12):
             The epsilon used by the layer normalization layers.
     """
+
     model_type = "deberta-v2"
 
     def __init__(
@@ -164,19 +165,23 @@ class DebertaV3PretrainingConfig(object):
         self.do_train = True  # pre-train DeBERTa
         self.do_eval = False  # evaluate generator/discriminator on unlabeled data
         self.phase2 = False
+        self.record_gradients = False
+        self.profile = False
 
         # amp
         self.distribution_strategy = "one_device"
         self.use_horovod = False
         self.num_gpus = 1
         self.tpu_address = ""
-        self.amp = True
+        self.amp = False
         self.xla = True
         self.fp16_compression = False
+        self.bf16 = False
 
         # optimizer type
         self.optimizer = "adam"
         self.gradient_accumulation_steps = 1
+        self.lr_schedule = "linear"
 
         # lamb whitelisting for LN and biases
         self.skip_adaptive = False
@@ -234,7 +239,9 @@ class DebertaV3PretrainingConfig(object):
         # tokens (so 15% of tokens are always
         # fake)
         self.temperature = 1.0  # temperature for sampling from generator
-
+        # add cls context into the discriminator head hidden states
+        # from https://github.com/microsoft/DeBERTa/blob/master/DeBERTa/apps/models/replaced_token_detection_model.py#L44
+        self.add_ctx_in_head = False
         # batch sizes
         self.max_seq_length = 128
         self.train_batch_size = 128
@@ -246,12 +253,17 @@ class DebertaV3PretrainingConfig(object):
         self.hidden_act = "gelu"
         self.hidden_dropout_prob = 0.1
         self.attention_probs_dropout_prob = 0.1
+        self.pooler_dropout_prob = 0
+        self.pooler_hidden_act = "gelu"
+        self.conv_kernel_size = 3
+        self.conv_act = "gelu"
         self.max_position_embeddings = 512
         self.type_vocab_size = 0
         self.relative_attention = True
         self.position_buckets = 256
         self.position_biased_input = False
         self.data_prep_working_dir = os.getenv("DATA_PREP_WORKING_DIR", "")
+        self.repeat_dataset = True
         self.update(kwargs)
         # default locations of data files
 
@@ -259,7 +271,16 @@ class DebertaV3PretrainingConfig(object):
             "data", "pretrain_tfrecords/pretrain_data.tfrecord*"
         )
         self.vocab_file = os.path.join("vocab", "vocab.txt")
-        self.ignore_ids_dict = {"[SEP]": 2, "[CLS]": 1, "[MASK]": 32000}
+        self.ignore_ids_dict = {
+            "[PAD]": 0,
+            "[CLS]": 1,
+            "[SEP]": 2,
+            "[UNK]": 3,
+            "[MASK]": 4,
+        }
+        self.pad_token_id = 0
+        self.bos_token_id = 1
+        self.eos_token_id = 2
         self.model_dir = os.path.join(self.results_dir, "models", model_name)
         self.checkpoints_dir = os.path.join(self.model_dir, "checkpoints")
         self.weights_dir = os.path.join(self.model_dir, "weights")
@@ -272,6 +293,7 @@ class DebertaV3PretrainingConfig(object):
         )
 
         # defaults for different-sized model
+
         if self.model_size == "base":
             self.hidden_size = 768
             self.embedding_size = 768
@@ -313,6 +335,18 @@ class DebertaV3PretrainingConfig(object):
             self.embedding_size = 768
             self.num_hidden_layers = 6
             self.intermediate_size = 3072
+            if self.hidden_size % 64 != 0:
+                raise ValueError(
+                    "Hidden size {} should be divisible by 64. Number of attention heads is hidden size {} / 64 ".format(
+                        self.hidden_size, self.hidden_size
+                    )
+                )
+            self.num_attention_heads = int(self.hidden_size / 64.0)
+        elif self.model_size == "xxlarge":
+            self.hidden_size = 1536
+            self.embedding_size = 1536
+            self.num_hidden_layers = 48
+            self.intermediate_size = 6144
             if self.hidden_size % 64 != 0:
                 raise ValueError(
                     "Hidden size {} should be divisible by 64. Number of attention heads is hidden size {} / 64 ".format(

@@ -14,7 +14,7 @@
 # limitations under the License.
 """ TF 2.0 DeBERTa-v2 model with DeBERTaV3 GDES pretraining capabilities."""
 
-# Modified by Wissam Antoun - Almanach - Inria Paris 2022/2023
+# Modified by Wissam Antoun - Almanach - Inria Paris 2024
 
 import collections
 import logging
@@ -22,17 +22,10 @@ from dataclasses import dataclass
 from typing import Dict, Optional, Tuple, Union
 
 import numpy as np
+import pretrain_utils
 import tensorflow as tf
 import tensorflow.experimental.numpy as tnp
-from transformers.file_utils import (
-    ModelOutput,
-    add_code_sample_docstrings,
-    add_start_docstrings,
-    add_start_docstrings_to_model_forward,
-    replace_return_docstrings,
-)
-
-import pretrain_utils
+import tensorflow_probability as tfp
 from activations_tf import get_tf_activation
 from configuration_deberta_v2 import (
     DebertaV2Config,
@@ -57,6 +50,13 @@ from modeling_tf_utils import (
     unpack_inputs,
 )
 from tf_utils import shape_list
+from transformers.file_utils import (
+    ModelOutput,
+    add_code_sample_docstrings,
+    add_start_docstrings,
+    add_start_docstrings_to_model_forward,
+    replace_return_docstrings,
+)
 from utils import heading, log, log_config
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,6 @@ class TFDebertaV2ContextPooler(tf.keras.layers.Layer):
         self.dense = tf.keras.layers.Dense(config.pooler_hidden_size, name="dense")
         self.dropout = TFDebertaV2StableDropout(
             config.pooler_dropout,
-            dtype=tf.float16 if config.amp else tf.float32,
             name="dropout",
         )
         self.config = config
@@ -126,45 +125,70 @@ class TFDebertaV2XSoftmax(tf.keras.layers.Layer):
         return output
 
 
-# Copied from transformers.models.deberta.modeling_tf_deberta.get_mask
-def get_mask(input, dropout):
-    mask = tf.cast(
-        1
-        - tf.compat.v1.distributions.Bernoulli(probs=1 - dropout).sample(
-            sample_shape=shape_list(input)
-        ),
-        tf.bool,
-    )
-    return mask, dropout
+# # Copied from transformers.models.deberta.modeling_tf_deberta.get_mask
+# def get_mask(input, dropout):
+#     _dropout = tf.convert_to_tensor(
+#         tf.constant(1, dtype=input.dtype) - dropout, dtype=input.dtype
+#     )
+#     mask = tf.cast(
+#         1
+#         - tfp.distributions.Bernoulli(probs=_dropout).sample(
+#             sample_shape=shape_list(input)
+#         ),
+#         tf.bool,
+#     )
+#     return mask, tf.convert_to_tensor(dropout, dtype=input.dtype)
 
 
-@tf.custom_gradient
-# Copied from transformers.models.deberta.modeling_tf_deberta.TFDebertaXDropout
-def TFDebertaV2XDropout(input, local_ctx):
-    mask, dropout = get_mask(input, local_ctx)
-    scale = tf.convert_to_tensor(1.0 / (1 - dropout), dtype=input.dtype)
-    # scale = tf.cast(scale, input.dtype)
-    input = tf.cond(
-        dropout > 0,
-        lambda: tf.where(mask, tf.constant(0.0, input.dtype), input) * scale,
-        lambda: input,
-    )
+# @tf.custom_gradient
+# # Copied from transformers.models.deberta.modeling_tf_deberta.TFDebertaXDropout
+# def TFDebertaV2XDropout(input, local_ctx):
+#     mask, dropout = get_mask(input, local_ctx)
+#     scale = tf.convert_to_tensor(
+#         tf.constant(1.0, dtype=input.dtype)
+#         / (tf.constant(1.0, dtype=input.dtype) - dropout),
+#         dtype=input.dtype,
+#     )
+#     # scale = tf.cast(scale, input.dtype)
+#     input = tf.cond(
+#         dropout > 0,
+#         lambda: tf.where(mask, tf.constant(0.0, input.dtype), input) * scale,
+#         lambda: input,
+#     )
 
-    def custom_grad(upstream_grad):
-        return tf.cond(
-            scale > 1,
-            lambda: (
-                tf.where(mask, tf.constant(0.0, upstream_grad.dtype), upstream_grad)
-                * scale,
-                None,
-            ),
-            lambda: (upstream_grad, None),
-        )
+#     def custom_grad(upstream_grad):
+#         return tf.cond(
+#             scale > 1,
+#             lambda: (
+#                 tf.where(mask, tf.constant(0.0, upstream_grad.dtype), upstream_grad)
+#                 * scale,
+#                 None,
+#             ),
+#             lambda: (upstream_grad, None),
+#         )
 
-    return input, custom_grad
+#     return input, custom_grad
 
 
-# Copied from transformers.models.deberta.modeling_tf_deberta.TFDebertaStableDropout with Deberta->DebertaV2
+# # Copied from transformers.models.deberta.modeling_tf_deberta.TFDebertaStableDropout with Deberta->DebertaV2
+# class TFDebertaV2StableDropout(tf.keras.layers.Layer):
+#     """
+#     Optimized dropout module for stabilizing the training
+
+#     Args:
+#         drop_prob (float): the dropout probabilities
+#     """
+
+#     def __init__(self, drop_prob, **kwargs):
+#         super().__init__(**kwargs)
+#         self.drop_prob = drop_prob
+
+#     def call(self, inputs: tf.Tensor, training: tf.Tensor = False):
+#         if training and self.drop_prob > 0:
+#             return TFDebertaV2XDropout(inputs, self.drop_prob)
+#         return inputs
+
+
 class TFDebertaV2StableDropout(tf.keras.layers.Layer):
     """
     Optimized dropout module for stabilizing the training
@@ -173,13 +197,49 @@ class TFDebertaV2StableDropout(tf.keras.layers.Layer):
         drop_prob (float): the dropout probabilities
     """
 
-    def __init__(self, drop_prob, dtype, **kwargs):
+    def __init__(self, drop_prob, **kwargs):
         super().__init__(**kwargs)
-        self.drop_prob = tf.convert_to_tensor(drop_prob, dtype=dtype)
+        self.drop_prob = drop_prob
+
+    @tf.custom_gradient
+    def xdropout(self, inputs):
+        """
+        Applies dropout to the inputs, as vanilla dropout, but also scales the remaining elements up by 1/drop_prob.
+        """
+        # mask = tf.cast(
+        #     1
+        #     - tf.compat.v1.distributions.Bernoulli(probs=1.0 - self.drop_prob).sample(
+        #         sample_shape=shape_list(inputs)
+        #     ),
+        #     tf.bool,
+        # )
+        mask = tf.cast(
+            1
+            - tfp.distributions.Bernoulli(probs=1.0 - self.drop_prob).sample(
+                sample_shape=shape_list(inputs)
+            ),
+            tf.bool,
+        )
+        scale = tf.convert_to_tensor(1.0 / (1 - self.drop_prob), dtype=inputs.dtype)
+        if self.drop_prob > 0:
+            inputs = (
+                tf.where(mask, tf.constant(0.0, dtype=inputs.dtype), inputs) * scale
+            )
+
+        def grad(upstream):
+            if self.drop_prob > 0:
+                return (
+                    tf.where(mask, tf.constant(0.0, dtype=upstream.dtype), upstream)
+                    * scale
+                )
+            else:
+                return upstream
+
+        return inputs, grad
 
     def call(self, inputs: tf.Tensor, training: tf.Tensor = False):
-        if training and self.drop_prob > 0:
-            return TFDebertaV2XDropout(inputs, self.drop_prob)
+        if training:
+            return self.xdropout(inputs)
         return inputs
 
 
@@ -193,7 +253,6 @@ class TFDebertaV2SelfOutput(tf.keras.layers.Layer):
         )
         self.dropout = TFDebertaV2StableDropout(
             config.hidden_dropout_prob,
-            dtype=tf.float16 if config.amp else tf.float32,
             name="dropout",
         )
 
@@ -280,7 +339,6 @@ class TFDebertaV2Output(tf.keras.layers.Layer):
         )
         self.dropout = TFDebertaV2StableDropout(
             config.hidden_dropout_prob,
-            dtype=tf.float16 if config.amp else tf.float32,
             name="dropout",
         )
 
@@ -349,7 +407,6 @@ class TFDebertaV2ConvLayer(tf.keras.layers.Layer):
         )
         self.dropout = TFDebertaV2StableDropout(
             config.hidden_dropout_prob,
-            dtype=tf.float16 if config.amp else tf.float32,
             name="dropout",
         )
         self.config = config
@@ -665,8 +722,16 @@ def torch_gather(x, indices, gather_axis):
     reshaped = tf.reshape(gathered, indices.shape)
     return reshaped
 
-
 def take_along_axis(x, indices):
+    flat_x = tf.reshape(x, (-1, x.shape[-1]))
+    flat_indices = tf.reshape(indices, (-1, indices.shape[-1]))
+    gathered = tf.gather(flat_x, flat_indices, batch_dims=1)
+    gathered = tf.reshape(gathered, indices.shape)
+
+    return gathered
+
+
+def take_along_axis_v2(x, indices):
     # Only a valid port of np.take_along_axis when the gather axis is -1
 
     # TPU + gathers and reshapes don't go along well -- see https://github.com/huggingface/transformers/issues/18239
@@ -748,7 +813,6 @@ class TFDebertaV2DisentangledSelfAttention(tf.keras.layers.Layer):
 
             self.pos_dropout = TFDebertaV2StableDropout(
                 config.hidden_dropout_prob,
-                dtype=tf.float16 if config.amp else tf.float32,
                 name="pos_dropout",
             )
 
@@ -769,7 +833,6 @@ class TFDebertaV2DisentangledSelfAttention(tf.keras.layers.Layer):
         self.softmax = TFDebertaV2XSoftmax(axis=-1)
         self.dropout = TFDebertaV2StableDropout(
             config.attention_probs_dropout_prob,
-            dtype=tf.float16 if config.amp else tf.float32,
             name="dropout",
         )
         self.amp = config.amp
@@ -851,11 +914,11 @@ class TFDebertaV2DisentangledSelfAttention(tf.keras.layers.Layer):
         scale = tf.math.sqrt(
             tf.cast(
                 shape_list(query_layer)[-1] * scale_factor,
-                tf.float16 if self.amp else tf.float32,
+                query_layer.dtype,
             )
         )
-        attention_scores = (
-            tf.matmul(query_layer, tf.transpose(key_layer, [0, 2, 1])) / scale
+        attention_scores = tf.matmul(
+            query_layer, tf.transpose(key_layer, [0, 2, 1]) / scale
         )
         if self.relative_attention:
             rel_embeddings = self.pos_dropout(rel_embeddings)
@@ -975,19 +1038,19 @@ class TFDebertaV2DisentangledSelfAttention(tf.keras.layers.Layer):
             scale = tf.math.sqrt(
                 tf.cast(
                     shape_list(pos_key_layer)[-1] * scale_factor,
-                    tf.float16 if self.amp else tf.float32,
+                    pos_key_layer.dtype,
                 )
             )
             c2p_att = tf.matmul(query_layer, tf.transpose(pos_key_layer, [0, 2, 1]))
             c2p_pos = tf.clip_by_value(relative_pos + att_span, 0, att_span * 2 - 1)
-            c2p_att = take_along_axis(
+            c2p_att = take_along_axis_v2(
                 c2p_att,
                 tf.broadcast_to(
                     tf.squeeze(c2p_pos, 0),
                     [
-                        query_layer.shape[0],
-                        query_layer.shape[1],
-                        relative_pos.shape[-1],
+                        shape_list(query_layer)[0],
+                        shape_list(query_layer)[1],
+                        shape_list(relative_pos)[-1],
                     ],
                 ),
             )
@@ -998,7 +1061,7 @@ class TFDebertaV2DisentangledSelfAttention(tf.keras.layers.Layer):
             scale = tf.math.sqrt(
                 tf.cast(
                     shape_list(pos_query_layer)[-1] * scale_factor,
-                    tf.float16 if self.amp else tf.float32,
+                    pos_query_layer.dtype,
                 )
             )
             if shape_list(key_layer)[-2] != shape_list(query_layer)[-2]:
@@ -1017,14 +1080,14 @@ class TFDebertaV2DisentangledSelfAttention(tf.keras.layers.Layer):
 
             p2c_att = tf.matmul(key_layer, tf.transpose(pos_query_layer, [0, 2, 1]))
             p2c_att = tf.transpose(
-                take_along_axis(
+                take_along_axis_v2(
                     p2c_att,
                     tf.broadcast_to(
                         tf.squeeze(p2c_pos, 0),
                         [
-                            query_layer.shape[0],
-                            key_layer.shape[-2],
-                            key_layer.shape[-2],
+                            shape_list(query_layer)[0],
+                            shape_list(key_layer)[-2],
+                            shape_list(key_layer)[-2],
                         ],
                     ),
                 ),
@@ -1059,7 +1122,6 @@ class TFDebertaV3Embeddings(tf.keras.layers.Layer):
             self.embed_proj = tf.keras.layers.Dense(
                 config.hidden_size,
                 kernel_initializer=get_initializer(config.initializer_range),
-                name="embed_proj",
                 use_bias=False,
             )
             log("Creating projection layer")
@@ -1068,7 +1130,6 @@ class TFDebertaV3Embeddings(tf.keras.layers.Layer):
         )
         self.dropout = TFDebertaV2StableDropout(
             config.hidden_dropout_prob,
-            dtype=tf.float16 if config.amp else tf.float32,
             name="dropout",
         )
         self.disentangled_gradients = disentangled_gradients
@@ -1167,6 +1228,16 @@ class TFDebertaV3Embeddings(tf.keras.layers.Layer):
         assert not (input_ids is None and inputs_embeds is None)
 
         if input_ids is not None:
+            # Note: tf.gather, on which the embedding layer is based, won't check positive out of bound
+            # indices on GPU, returning zeros instead. This is a dangerous silent behavior.
+            tf.debugging.assert_less(
+                input_ids,
+                tf.cast(self.vocab_size, dtype=input_ids.dtype),
+                message=(
+                    "input_ids must be smaller than the embedding layer's input dimension (got"
+                    f" {tf.math.reduce_max(input_ids)} >= {self.vocab_size})"
+                ),
+            )
             inputs_embeds = tf.gather(params=self.weight, indices=input_ids)
 
         input_shape = shape_list(inputs_embeds)[:-1]
@@ -1175,6 +1246,7 @@ class TFDebertaV3Embeddings(tf.keras.layers.Layer):
             token_type_ids = tf.fill(dims=input_shape, value=0)
 
         if position_ids is None:
+            # This doesn't work if there is padding in the input
             position_ids = tf.expand_dims(
                 tf.range(start=0, limit=input_shape[-1]), axis=0
             )
@@ -1771,9 +1843,7 @@ class TFDebertaV2ForSequenceClassification(
 
         drop_out = getattr(config, "cls_dropout", None)
         drop_out = self.config.hidden_dropout_prob if drop_out is None else drop_out
-        self.dropout = TFDebertaV2StableDropout(
-            drop_out, dtype=tf.float16 if config.amp else tf.float32, name="cls_dropout"
-        )
+        self.dropout = TFDebertaV2StableDropout(drop_out, name="cls_dropout")
         self.classifier = tf.keras.layers.Dense(
             units=config.num_labels,
             kernel_initializer=get_initializer(config.initializer_range),
@@ -2086,10 +2156,19 @@ class TFDebertaV3DiscriminatorPredictions(tf.keras.layers.Layer):
         super().__init__(**kwargs)
 
         self.dense = tf.keras.layers.Dense(config.hidden_size, name="dense")
-        self.dense_prediction = tf.keras.layers.Dense(1, name="dense_prediction")
         self.config = config
+        if self.config.to_dict().get("add_ctx_in_head", False):
+            self.LayerNorm = tf.keras.layers.LayerNormalization(
+                epsilon=config.layer_norm_eps, name="LayerNorm"
+            )
+        self.dense_prediction = tf.keras.layers.Dense(1, name="dense_prediction")
 
     def call(self, discriminator_hidden_states, training=False):
+        if self.config.to_dict().get("add_ctx_in_head", False):
+            ctx_states = discriminator_hidden_states[:, 0, :]
+            discriminator_hidden_states = self.LayerNorm(
+                tf.expand_dims(ctx_states, -2) + discriminator_hidden_states
+            )
         hidden_states = self.dense(discriminator_hidden_states)
         hidden_states = get_tf_activation(self.config.hidden_act)(hidden_states)
         logits = tf.squeeze(self.dense_prediction(hidden_states), -1)
@@ -2180,6 +2259,21 @@ class TFDebertaV3ForRTD(TFDebertaV2PreTrainedModel):
         training: Optional[bool] = False,
         **kwargs,
     ) -> Union[TFDebertaV3ForRTDOutput, Tuple[tf.Tensor]]:
+        r"""
+        Returns:
+
+        Examples:
+
+        ```python
+        >>> import tensorflow as tf
+        >>> from transformers import ElectraTokenizer, TFElectraForPreTraining
+
+        >>> tokenizer = ElectraTokenizer.from_pretrained("google/electra-small-discriminator")
+        >>> model = TFElectraForPreTraining.from_pretrained("google/electra-small-discriminator")
+        >>> input_ids = tf.constant(tokenizer.encode("Hello, my dog is cute"))[None, :]  # Batch size 1
+        >>> outputs = model(input_ids)
+        >>> scores = outputs[0]
+        ```"""
         outputs = self.debertav2(
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -2221,9 +2315,37 @@ class TFDebertaV3ForRTD(TFDebertaV2PreTrainedModel):
         )
 
 
-def get_generator_config(config, bert_config):
+def get_generator_config(
+    config: DebertaV3PretrainingConfig, bert_config: DebertaV2Config
+):
     """Get model config for the generator network."""
-    gen_config = DebertaV2Config.from_dict(bert_config.to_dict())
+    gen_config = DebertaV2Config(
+        vocab_size=bert_config.vocab_size,
+        hidden_size=bert_config.hidden_size,
+        embedding_size=bert_config.embedding_size,
+        num_hidden_layers=bert_config.num_hidden_layers,
+        num_attention_heads=bert_config.num_attention_heads,
+        intermediate_size=bert_config.intermediate_size,
+        hidden_act=bert_config.hidden_act,
+        hidden_dropout_prob=bert_config.hidden_dropout_prob,
+        attention_probs_dropout_prob=bert_config.attention_probs_dropout_prob,
+        max_position_embeddings=bert_config.max_position_embeddings,
+        type_vocab_size=bert_config.type_vocab_size,
+        initializer_range=bert_config.initializer_range,
+        layer_norm_eps=bert_config.layer_norm_eps,
+        conv_kernel_size=bert_config.conv_kernel_size,
+        conv_act=bert_config.conv_act,
+        relative_attention=bert_config.relative_attention,
+        position_buckets=bert_config.position_buckets,
+        norm_rel_ebd=bert_config.norm_rel_ebd,
+        max_relative_positions=bert_config.max_relative_positions,
+        pad_token_id=bert_config.pad_token_id,
+        position_biased_input=bert_config.position_biased_input,
+        share_att_key=bert_config.share_att_key,
+        pos_att_type=bert_config.pos_att_type,
+        pooler_dropout=bert_config.pooler_dropout,
+        pooler_hidden_act=bert_config.pooler_hidden_act,
+    )
     gen_config.hidden_size = int(
         round(bert_config.hidden_size * config.generator_hidden_size)
     )
@@ -2254,7 +2376,7 @@ class PretrainingModel(tf.keras.Model):
             embedding_size=config.embedding_size,
             num_hidden_layers=config.num_hidden_layers,
             num_attention_heads=config.num_attention_heads,
-            intermediate_size=4 * config.hidden_size,
+            intermediate_size=config.intermediate_size,
             hidden_act=config.hidden_act,
             hidden_dropout_prob=config.hidden_dropout_prob,
             attention_probs_dropout_prob=config.attention_probs_dropout_prob,
@@ -2263,8 +2385,17 @@ class PretrainingModel(tf.keras.Model):
             relative_attention=config.relative_attention,
             position_buckets=config.position_buckets,
             position_biased_input=config.position_biased_input,
+            conv_kernel_size=config.conv_kernel_size,
+            conv_act=config.conv_act,
+            pooler_dropout=config.pooler_dropout_prob,
+            pooler_hidden_act=config.pooler_hidden_act,
         )
-        self.disc_config.update({"amp": config.amp})
+        self.disc_config.update(
+            {
+                "amp": config.amp,
+                "add_ctx_in_head": config.add_ctx_in_head,
+            }
+        )
         # self.disc_config.update({"output_hidden_states": True})
 
         if config.electra_objective:
@@ -2306,12 +2437,12 @@ class PretrainingModel(tf.keras.Model):
             mlm_output = self._get_masked_lm_output(
                 masked_inputs, self.generator, is_training=is_training
             )
-        fake_data = self._get_fake_data(masked_inputs, mlm_output.logits)
         total_loss = config.gen_weight * mlm_output.loss
 
         # Discriminator
         disc_output = None
         if config.electra_objective:
+            fake_data = self._get_fake_data(masked_inputs, mlm_output.logits)
             disc_output = self._get_discriminator_output(
                 fake_data.inputs,
                 self.discriminator,
@@ -2440,7 +2571,9 @@ class PretrainingModel(tf.keras.Model):
         )
         sampled_tokens = tf.stop_gradient(
             pretrain_utils.sample_from_softmax(
-                mlm_logits / self._config.temperature, disallow=disallow
+                mlm_logits
+                / tf.constant(self._config.temperature, dtype=mlm_logits.dtype),
+                disallow=disallow,
             )
         )
         sampled_tokids = tf.argmax(sampled_tokens, -1, output_type=tf.int32)

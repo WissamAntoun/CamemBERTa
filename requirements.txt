@@ -2,4 +2,11 @@
 git+https://github.com/huggingface/transformers.git@0c55d47cded0c711a4359afb04d73ffb86b7d913
 # transformers==4.17.0
 sentencepiece==0.1.96
-tensorflow-addons
+# tensorflow-addons==0.15.0
+# https://github.com/kpu/kenlm/archive/master.zip
+emoji==2.1.0
+datasets
+# numpy==1.23.4
+urllib3<2
+# fasttext==0.9.2
+tensorflow-probability==0.24.0
